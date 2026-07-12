@@ -13,8 +13,8 @@ tool use.
 from __future__ import annotations
 
 import os
+import posixpath
 import re
-import tempfile
 
 from ..discovery import ParsedSession
 from ..finding import Category, Severity
@@ -46,7 +46,7 @@ _QUOTED_RE = re.compile(r'"([^"\n]+)"|\'([^\'\n]+)\'')
 
 def check(session: ParsedSession) -> list:
     findings: list = []
-    root = os.path.normpath(session.project_root) if session.project_root else None
+    root = posixpath.normpath(session.project_root) if session.project_root else None
     seen: set = set()
 
     for tc in session.tool_calls:
@@ -104,16 +104,16 @@ def check(session: ParsedSession) -> list:
 
 
 _DEV_NOISE = ("/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/zero", "/dev/random", "/dev/urandom")
-# The OS scratch area is where a well-behaved agent is expected to put throwaway
+# The scratch area is where a well-behaved agent is expected to put throwaway
 # files; a write there is common enough that treating it the same as a write to
-# /etc would drown out findings that actually deserve HIGH.
-_SCRATCH_PREFIXES = tuple(
-    os.path.normpath(p) for p in {tempfile.gettempdir(), "/tmp", "/var/tmp"}
-)
+# /etc would drown out findings that actually deserve HIGH. These are the paths
+# a transcript uses, so they stay POSIX no matter what OS sessionxray runs on
+# (/var/folders is macOS's per-user temp).
+_SCRATCH_PREFIXES = ("/tmp", "/var/tmp", "/var/folders")
 
 
 def _is_scratch(path: str) -> bool:
-    return any(path == p or path.startswith(p + os.sep) for p in _SCRATCH_PREFIXES)
+    return any(path == p or path.startswith(p + "/") for p in _SCRATCH_PREFIXES)
 
 
 def _consume_quoted_paths(cmd: str, tc, root, is_write: bool, evidence: str,
@@ -165,22 +165,35 @@ def _check_path(raw: str, cwd: str, root, *, is_write: bool, evidence: str,
               "deliberate, reviewed exception.")
 
 
+# Transcript paths are the analyzed machine's, which is POSIX in practice; `~`
+# refers to that machine's home, which we do not know, so expand it to a stable
+# absolute stand-in. Detection only needs it to land outside the project root and
+# keep any sensitive suffix (/.ssh and friends) intact, which this does.
+_HOME = os.environ.get("HOME") or "/root"
+if not _HOME.startswith("/"):
+    _HOME = "/root"
+
+
 def _normalize(raw: str, cwd: str):
     if not raw:
         return None
     try:
-        p = os.path.expanduser(raw)
-        if not os.path.isabs(p):
+        p = raw
+        if p == "~":
+            p = _HOME
+        elif p.startswith("~/"):
+            p = _HOME + p[1:]
+        if not p.startswith("/"):
             if not cwd:
                 return None
-            p = os.path.join(cwd, p)
-        return os.path.normpath(p)
+            p = posixpath.join(cwd, p)
+        return posixpath.normpath(p)
     except (TypeError, ValueError):
         return None
 
 
 def _is_under(path: str, root: str) -> bool:
-    return path == root or path.startswith(root + os.sep)
+    return path == root or path.startswith(root + "/")
 
 
 def _is_sensitive(path: str) -> bool:
