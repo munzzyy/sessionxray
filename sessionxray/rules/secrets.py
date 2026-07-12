@@ -34,7 +34,7 @@ _SENSITIVE_PATH_RE = re.compile(
 _GH_AUTH_TOKEN_RE = re.compile(r"\bgh\s+auth\s+token\b", _I)
 _EGRESS_HINT_RE = re.compile(r"\b(?:curl|wget|nc|ncat)\b|https?://", _I)
 _ENV_SECRET_ECHO_RE = re.compile(
-    r"\b(?:echo|printf)\b[^\n]*\$\{?[A-Z_]*(?:SECRET|TOKEN|API_?KEY|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_KEY)[A-Z_]*\}?", _I)
+    r"\b(?:echo|printf)\b[^\n]*\$\{?[A-Z_]*(?:SECRET|TOKEN|KEY|PASSWORD|PASSWD|CREDENTIAL)[A-Z_]*\}?", _I)
 _ENV_DUMP_GREP_RE = re.compile(
     r"\b(?:printenv|env)\b[^\n|]*\|\s*grep\s+-i\s+(?:secret|token|key|password|credential)", _I)
 

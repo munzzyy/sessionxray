@@ -40,7 +40,12 @@ _WRITE_RE = re.compile(
 # it were an unrelated absolute path -- a real, high-volume false positive.
 _PATH_RE = re.compile(r"(?<![\w./\-])(~(?:/[\w.\-]+)*|/(?:[\w.\-]+/)*[\w.\-]+)")
 _TRAVERSAL_RE = re.compile(r"(?:^|[\s\"'=])(\.\.(?:/[\w.\-]+)+)")
-_URL_RE = re.compile(r"\w+://\S+")
+# The scheme is bounded to 32 chars instead of an unbounded \w+: real URI
+# schemes (http, https, mcp, vscode-insiders, ...) are always short, but an
+# unbounded run of word characters with no "://" anywhere used to force this
+# to backtrack one character at a time at every position in the text --
+# quadratic in the input length for a long scheme-free run.
+_URL_RE = re.compile(r"\w{1,32}://\S+")
 _QUOTED_RE = re.compile(r'"([^"\n]+)"|\'([^\'\n]+)\'')
 
 
@@ -73,7 +78,9 @@ def check(session: ParsedSession) -> list:
                 # Strip URLs before hunting for filesystem paths: a URL's path
                 # component (the "/upload" in https://host/upload) looks
                 # exactly like an absolute path and is the network rule's job.
-                seg_no_urls = _URL_RE.sub(" ", segment)
+                # _URL_RE can't match without a literal "://", so skip it
+                # outright on segments that don't have one.
+                seg_no_urls = _URL_RE.sub(" ", segment) if "://" in segment else segment
                 # A quoted argument can contain spaces (a path with a space in
                 # the name). Check the whole quoted string as one path and
                 # remove it, so the unquoted scan below doesn't also pick up

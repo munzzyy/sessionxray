@@ -20,7 +20,13 @@ _PATTERNS = [
     (re.compile(r"\beval\s+[\"'`]?\$\(\s*(?:curl|wget)\b", _I),
      Severity.HIGH, "Evaluates downloaded content",
      "Runs eval on the output of a network fetch; the remote endpoint controls what executes here."),
-    (re.compile(r"\beval\s+[\"'`$(]"),
+    # `eval "$(...)"` (shell, needs whitespace before the opener) and
+    # `eval(...)`/`exec(...)` (language-level call, no space at all -- Python's
+    # exec(eval(compile(base64.b64decode(...)))) is the common obfuscated-
+    # payload shape) are both "run this constructed thing," just spelled
+    # differently. `eval\s*\(` stops at "evaluate(": after "eval" comes "uate",
+    # not whitespace-then-"(", so it never fires on that word.
+    (re.compile(r"\beval\s+[\"'`$(]|\b(?:eval|exec)\s*\("),
      Severity.MEDIUM, "Dynamic shell eval",
      "eval runs a constructed string as a command, which hides what actually executes until runtime."),
     (re.compile(r"\b(?:pip3?|pipx)\s+install\s+[^\n]*(?:git\+|https?://)", _I),

@@ -12,6 +12,15 @@ import re
 from ..discovery import ToolCall
 from ..finding import Category, Finding, Severity
 
+# A key name ending in one of these tokens, optionally prefixed by another
+# identifier segment. DB_PASSWORD and MY_API_KEY are exactly as live as
+# PASSWORD and API_KEY on their own, but "_" is a word character, so there is
+# no \b between the prefix and the token for a plain \bpassword\b to find.
+_SECRET_KEY = (
+    r"\b[\w-]*(?:aws_secret_access_key|secret[_-]?key|api[_-]?key|"
+    r"access[_-]?token|auth[_-]?token|password|passwd|credentials?|token)\b"
+)
+
 # (compiled pattern, capture group to mask (None = whole match), label)
 _SECRET_RULES = [
     (re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----.*?"
@@ -27,9 +36,12 @@ _SECRET_RULES = [
     (re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b"), None, "google-api-key"),
     (re.compile(r"\bglpat-[0-9A-Za-z_\-]{20,}\b"), None, "gitlab-token"),
     (re.compile(r"(?i)\bAuthorization:\s*Bearer\s+([A-Za-z0-9\-_.=]{16,})"), 1, "bearer-token"),
-    (re.compile(r"(?i)\b(?:aws_secret_access_key|secret[_-]?key|api[_-]?key|"
-                r"access[_-]?token|auth[_-]?token|password|passwd)\b\s*[:=]\s*"
-                r"[\"']([^\"'\n]{8,})[\"']"), 1, "assigned-secret"),
+    (re.compile(r"(?i)" + _SECRET_KEY + r"\s*[:=]\s*[\"']([^\"'\n]{8,})[\"']"), 1, "assigned-secret"),
+    # Unquoted form -- `export DB_PASSWORD=Tr0ub4dor3...` is exactly as live a
+    # credential as the quoted form, and shell exports/.env files routinely
+    # skip the quotes entirely. Cut off at the first shell metacharacter or
+    # quote so a long command line never gets swallowed whole as "the secret".
+    (re.compile(r"(?i)" + _SECRET_KEY + r"\s*[:=]\s*([^\s;&|`\"'\n]{6,})"), 1, "assigned-secret"),
 ]
 
 
@@ -51,8 +63,20 @@ def redact(text: str) -> str:
     return out
 
 
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _escape_controls(text: str) -> str:
+    """Replace any C0/C1 control byte -- ESC included -- with a visible \\xNN
+    placeholder. Evidence is often the literal text of a tool result, which is
+    untrusted: without this, a crafted result can plant terminal escape codes
+    that clear the screen or repaint a fake "no findings" line once the report
+    reaches a real terminal."""
+    return _CONTROL_RE.sub(lambda m: f"\\x{ord(m.group(0)):02x}", text)
+
+
 def truncate(text: str, width: int = 160) -> str:
-    text = " ".join((text or "").split())
+    text = _escape_controls(" ".join((text or "").split()))
     if len(text) > width:
         return text[: width - 3] + "..."
     return text

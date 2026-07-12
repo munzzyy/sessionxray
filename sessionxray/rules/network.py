@@ -21,7 +21,13 @@ _SINK_RE = re.compile(
     r"(?:"
     r"webhook\.site|requestbin\.\w+|pipedream\.net|"
     r"hooks\.slack\.com/services|discord(?:app)?\.com/api/webhooks|api\.telegram\.org/bot|"
-    r"[0-9a-z-]+\.ngrok(?:-free)?\.(?:io|app|dev)|[0-9a-z-]+\.trycloudflare\.com|[0-9a-z-]+\.lhr\.life|"
+    # Bounded to 63 chars -- the real DNS max label length -- instead of an
+    # unbounded +. A long dot-free run used to make this backtrack character
+    # by character at every start position hunting for a "." that never
+    # comes, which is quadratic in the input length; a real label can never
+    # be that long anyway, so the bound changes nothing about what matches.
+    r"[0-9a-z-]{1,63}\.ngrok(?:-free)?\.(?:io|app|dev)|[0-9a-z-]{1,63}\.trycloudflare\.com|"
+    r"[0-9a-z-]{1,63}\.lhr\.life|"
     r"pastebin\.com|hastebin\.com|termbin\.com|transfer\.sh|0x0\.st|file\.io|"
     r"\.oast\.(?:fun|live|pro|online|site|me)|burpcollaborator\.net|interact\.sh|"
     r"dnslog\.cn|canarytokens\.\w+|requestrepo\.com"
@@ -65,7 +71,10 @@ def check(session: ParsedSession) -> list:
             continue
         hosts = _hosts_for(text, is_web)
 
-        if _SINK_RE.search(text):
+        # Every _SINK_RE alternative requires a literal "." somewhere, so this
+        # is a correctness-preserving fast path, not a heuristic -- it just
+        # skips the regex entirely on text that could never match.
+        if "." in text and _SINK_RE.search(text):
             _add(findings, seen, tc, "sink", Severity.HIGH,
                  "Known data-collection endpoint contacted",
                  "Reaches a paste, webhook, or tunnel service whose only purpose is "
