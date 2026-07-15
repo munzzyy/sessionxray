@@ -4,6 +4,8 @@
 [![License: Prosperity 3.0.0](https://img.shields.io/badge/license-Prosperity--3.0.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
 
+![sessionxray grading an F on a transcript that follows an injected WebFetch result into a credential leak, a piped-to-shell recovery script, and a new SSH authorized_keys entry](docs/media/demo.svg)
+
 sessionxray reads a Claude Code session transcript after the fact and answers one question: what did the agent actually touch, and should any of it worry you. Other transcript tools total up cost and tokens; this one is a security read of the same JSONL file -- the commands it ran, the files it read and wrote, the sites it fetched, and what came back from those fetches.
 
 A coding agent with shell and file access can, in one ordinary session, read your SSH key, write outside the project it was pointed at, pull a script off the internet and run it, or get handed injected instructions from a web page it fetched. Most of that is invisible unless you go read the transcript by hand. sessionxray reads it for you and grades what it finds.
