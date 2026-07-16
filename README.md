@@ -161,3 +161,7 @@ Found a pattern that should have been flagged and wasn't, or a false positive on
 ## License
 
 MIT — free to use, change, and ship, commercial or not. See [LICENSE](LICENSE).
+
+## Support
+
+If sessionxray told you something about a session you didn't already know, [sponsoring](https://github.com/sponsors/munzzyy) is what keeps the rules growing.
