@@ -1,0 +1,5 @@
+# Force LF regardless of the checkout OS's core.autocrlf. A shell script
+# checked out with CRLF line endings fails to parse under bash -- a CRLF
+# stuck to "then"/"fi" reads as part of the token, not whitespace -- which
+# is exactly what broke hooks/sessionxray-sessionend.sh on windows-latest.
+*.sh text eol=lf
