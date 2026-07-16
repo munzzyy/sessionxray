@@ -3,9 +3,11 @@
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from sessionxray import cli
 from sessionxray.finding import Category, Finding, Severity
@@ -152,6 +154,66 @@ class CLI(unittest.TestCase):
         code, out = self._run([str(path), "--project-root", "/outside", "--json", "--fail-on", "none"])
         payload = json.loads(out)
         self.assertEqual(payload["sessions"][0]["findings"], [])
+
+    def test_no_targets_and_no_tail_is_usage_error(self):
+        # targets is nargs="*" (not "+") so --tail can run with none given;
+        # scanning with nothing at all must still be a clean usage error.
+        code, _ = self._run([])
+        self.assertEqual(code, 2)
+
+
+class Tail(unittest.TestCase):
+    """`--tail` reads the SessionEnd hook's history log back, newest first.
+    Every test points SESSIONXRAY_HISTORY_LOG at a throwaway file so this
+    never touches a real ~/.claude/sessionxray/history.log."""
+
+    def _run(self, argv, log_path):
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"SESSIONXRAY_HISTORY_LOG": str(log_path)}):
+            with contextlib.redirect_stdout(out):
+                code = cli.main(argv)
+        return code, out.getvalue()
+
+    def test_missing_log_is_not_an_error(self):
+        log_path = Path(tempfile.mkdtemp()) / "no-such-history.log"
+        code, out = self._run(["--tail"], log_path)
+        self.assertEqual(code, 0)
+        self.assertIn("no history log yet", out)
+
+    def test_newest_first(self):
+        log_path = Path(tempfile.mkdtemp()) / "history.log"
+        log_path.write_text(
+            "[2026-07-10T09:00:00Z] reason=clear    A (100/100)  clean  0 total  first\n"
+            "[2026-07-10T09:01:00Z] reason=resume   F (  0/100)  1 critical  1 total  second\n"
+            "[2026-07-10T09:02:00Z] reason=logout   A (100/100)  clean  0 total  third\n",
+            encoding="utf-8",
+        )
+        code, out = self._run(["--tail"], log_path)
+        self.assertEqual(code, 0)
+        lines = [ln for ln in out.splitlines() if "reason=" in ln]
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(lines[0].endswith("third"))
+        self.assertTrue(lines[1].endswith("second"))
+        self.assertTrue(lines[2].endswith("first"))
+
+    def test_tail_limit(self):
+        log_path = Path(tempfile.mkdtemp()) / "history.log"
+        log_path.write_text("".join(f"line-{i}\n" for i in range(5)), encoding="utf-8")
+        code, out = self._run(["--tail", "--tail-limit", "2"], log_path)
+        self.assertEqual(code, 0)
+        lines = [ln for ln in out.splitlines() if ln.startswith("line-")]
+        self.assertEqual(lines, ["line-4", "line-3"])
+
+    def test_empty_log_says_so(self):
+        log_path = Path(tempfile.mkdtemp()) / "history.log"
+        log_path.write_text("", encoding="utf-8")
+        code, out = self._run(["--tail"], log_path)
+        self.assertEqual(code, 0)
+        self.assertIn("is empty", out)
+
+    def test_tail_conflicts_with_json(self):
+        with self.assertRaises(SystemExit):
+            cli.build_parser().parse_args(["--tail", "--json"])
 
 
 if __name__ == "__main__":

@@ -113,11 +113,45 @@ sessionxray "$CLAUDE_TRANSCRIPT" --fail-on high
 
 `--fail-on` takes `critical`, `high`, `medium`, `low`, `info`, or `none` (default `high`) and applies across every session scanned in one run.
 
+### A Claude Code hook (automatic, every session)
+
+The command above still has to be run by hand, or wired into something that remembers to run it. `hooks/sessionxray-sessionend.sh` closes that gap: register it as a `SessionEnd` hook and every session gets scanned the moment it ends, with nothing to remember.
+
+Add this to `~/.claude/settings.json` (or a project's own `.claude/settings.json`), pointing at wherever you cloned this repo:
+
+```json
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/sessionxray/hooks/sessionxray-sessionend.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The hook reads `transcript_path` off the stdin JSON Claude Code sends on `SessionEnd`, runs `sessionxray --summary --fail-on none` against it, and appends one line -- a timestamp, the `SessionEnd` reason (`clear`, `resume`, `logout`, ...), and the grade -- to `~/.claude/sessionxray/history.log`. If `sessionxray` isn't installed as a command, it falls back to running the copy of the package sitting next to the script itself, the same "clone it, no install needed" path the Install section above already documents. Read the log back, newest first:
+
+```bash
+sessionxray --tail
+```
+
+Be honest about what this is. A `SessionEnd` hook has no decision control in Claude Code -- nothing here can block or undo anything, only log it, and whatever happened in the session already happened by the time this fires. Treat it as a passive audit trail worth spot-checking now and then, not a real-time guardrail. If you want something that stops a bad action before it happens, that's a `PreToolUse` gate, a different kind of hook this repo doesn't build.
+
+If `transcript_path` is missing, empty, or doesn't point at a real file, or if `jq` isn't installed, the hook exits `0` and writes nothing -- it never blocks a session from ending or prints an error into your terminal.
+
 ### Output formats
 
 - default -- colored human report, one block per session
 - `--json` -- `{"tool", "version", "sessions": [...]}`, full findings per session
 - `--summary` -- one line per session
+- `--tail` -- print the `SessionEnd` hook's history log, newest first; `--tail-limit N` caps it to the N most recent entries
 - `--out PATH` -- write the report to a file instead of stdout
 - `--no-color` -- disable ANSI color (automatic when not a TTY)
 - `--project-root PATH` -- override the inferred project root for every session in this run
@@ -146,13 +180,13 @@ Findings are graded to a letter: any CRITICAL is an F, any HIGH keeps the grade 
 
 ## Privacy
 
-Everything runs locally against files already on disk. sessionxray makes no network calls, sends no telemetry, and writes nothing but the report. Any matched secret value (a key, a token, a password-shaped assignment) is redacted before it is ever placed in a finding, in every output format. Session transcripts can contain real conversations and real file contents -- treat the reports the same way you'd treat the transcripts themselves.
+Everything runs locally against files already on disk. sessionxray makes no network calls, sends no telemetry, and writes nothing but the report. The one exception is opt-in: the `SessionEnd` hook writes a one-line grade per session to `~/.claude/sessionxray/history.log`, still local, still no network call. Any matched secret value (a key, a token, a password-shaped assignment) is redacted before it is ever placed in a finding, in every output format. Session transcripts can contain real conversations and real file contents -- treat the reports the same way you'd treat the transcripts themselves.
 
 ## Exit codes
 
-- `0` -- nothing at or above `--fail-on` (default `high`) in any scanned session
+- `0` -- nothing at or above `--fail-on` (default `high`) in any scanned session; also the normal result of `--tail`
 - `1` -- something at or above `--fail-on` was found
-- `2` -- usage error: a target didn't resolve to any `.jsonl` file, or an argument was invalid
+- `2` -- usage error: a target didn't resolve to any `.jsonl` file, an argument was invalid, or (with `--tail`) the history log exists but couldn't be read
 
 ## Contributing
 
