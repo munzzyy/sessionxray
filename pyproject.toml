@@ -7,13 +7,14 @@ name = "sessionxray"
 version = "0.1.0"
 description = "Audit a Claude Code session transcript for what the agent actually touched: filesystem reach, destructive commands, credential access, network egress, remote code, persistence, and prompt-injection exposure."
 readme = "README.md"
-license = { text = "Prosperity Public License 3.0.0" }
+license = { text = "MIT" }
 requires-python = ">=3.9"
 authors = [{ name = "Cole Munz" }]
 dependencies = []
 keywords = ["claude-code", "agent", "security", "audit", "session", "transcript",
             "prompt-injection", "sast", "static-analysis"]
 classifiers = [
+    "License :: OSI Approved :: MIT License",
     "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",

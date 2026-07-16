@@ -1,7 +1,7 @@
 # sessionxray
 
 [![CI](https://github.com/munzzyy/sessionxray/actions/workflows/ci.yml/badge.svg)](https://github.com/munzzyy/sessionxray/actions/workflows/ci.yml)
-[![License: Prosperity 3.0.0](https://img.shields.io/badge/license-Prosperity--3.0.0-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
 
 ![sessionxray grading an F on a transcript that follows an injected WebFetch result into a credential leak, a piped-to-shell recovery script, and a new SSH authorized_keys entry](docs/media/demo.svg)
@@ -160,4 +160,4 @@ Found a pattern that should have been flagged and wasn't, or a false positive on
 
 ## License
 
-Prosperity Public License 3.0.0 -- free for noncommercial use, thirty-day trial for commercial use. See [LICENSE](LICENSE). Contributions come in under the Blue Oak Model License; see [CONTRIBUTING.md](CONTRIBUTING.md).
+MIT — free to use, change, and ship, commercial or not. See [LICENSE](LICENSE).
