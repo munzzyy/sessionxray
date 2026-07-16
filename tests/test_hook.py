@@ -2,9 +2,13 @@
 hook. Runs the real script as a subprocess over a real pipe, exactly how
 Claude Code invokes it -- nothing about the shell/jq boundary is mocked.
 
-Skipped outright on a machine with no bash or no jq (a bare Windows runner,
-say); the hook itself already treats a missing jq as "log nothing, exit 0",
-which is covered separately by test_no_jq_is_a_quiet_noop.
+Skipped on a machine with no bash or no jq, and skipped outright on native
+Windows: a bare `bash` on a Windows PATH is ambiguous (it can resolve to the
+System32 WSL launcher stub instead of Git Bash, with no distro behind it),
+and the hook itself -- a `.sh` invoked from settings.json -- is a POSIX
+shell / WSL / macOS / Linux feature to begin with, the same as every other
+bash-based Claude Code hook. The hook's own "missing jq" fallback is still
+covered here, just not on Windows specifically.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,9 +28,11 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 _HAVE_BASH = shutil.which("bash") is not None
 _HAVE_JQ = shutil.which("jq") is not None
+_POSIX_ENOUGH = sys.platform != "win32"
 
 
-@unittest.skipUnless(_HAVE_BASH and _HAVE_JQ, "bash and jq required to exercise the real hook script")
+@unittest.skipUnless(_HAVE_BASH and _HAVE_JQ and _POSIX_ENOUGH,
+                      "bash and jq required to exercise the real hook script (not on native Windows)")
 class SessionEndHook(unittest.TestCase):
     def setUp(self):
         self._tmpdir = Path(tempfile.mkdtemp(prefix="sxr-hook-test-"))
@@ -125,7 +132,7 @@ class SessionEndHook(unittest.TestCase):
         self.assertTrue(self.log_path.exists())
 
 
-@unittest.skipUnless(_HAVE_BASH, "bash required to exercise the real hook script")
+@unittest.skipUnless(_HAVE_BASH and _POSIX_ENOUGH, "bash required to exercise the real hook script (not on native Windows)")
 class NoJq(unittest.TestCase):
     def test_no_jq_is_a_quiet_noop(self):
         tmpdir = Path(tempfile.mkdtemp(prefix="sxr-hook-nojq-"))
