@@ -18,7 +18,8 @@ import re
 
 from ..discovery import ParsedSession
 from ..finding import Category, Severity
-from ._util import bash_command, classify_tool, field_str, mask_quoted, mk, split_bash_segments
+from ._util import (bash_command, classify_tool, field_str, mask_quoted, mcp_is_write,
+                     mcp_paths, mk, split_bash_segments)
 
 RULE_ID = "SXR-001"
 
@@ -60,6 +61,13 @@ def check(session: ParsedSession) -> list:
             p = field_str(tc.input, "file_path", "path", "notebook_path")
             if p:
                 f = _check_path(p, tc.cwd, root, is_write=(kind != "read"),
+                                 evidence=p, event_index=tc.index, tool_name=tc.tool_name, seen=seen)
+                if f:
+                    findings.append(f)
+        elif kind == "mcp":
+            is_write = mcp_is_write(tc.tool_name)
+            for p in mcp_paths(tc):
+                f = _check_path(p, tc.cwd, root, is_write=is_write,
                                  evidence=p, event_index=tc.index, tool_name=tc.tool_name, seen=seen)
                 if f:
                     findings.append(f)

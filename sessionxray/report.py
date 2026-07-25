@@ -20,8 +20,9 @@ _GRADE_COLOR = {"A": "\033[32m", "B": "\033[32m", "C": "\033[33m",
                 "D": "\033[33m", "F": "\033[1;31m"}
 _SEVERITY_ORDER = (Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW, Severity.INFO)
 
-_RULE_ORDER = ["SXR-001", "SXR-002", "SXR-003", "SXR-004", "SXR-005", "SXR-006", "SXR-007"]
+_RULE_ORDER = ["SXR-000", "SXR-001", "SXR-002", "SXR-003", "SXR-004", "SXR-005", "SXR-006", "SXR-007"]
 _RULE_LABEL = {
+    "SXR-000": "transcript integrity",
     "SXR-001": "filesystem reach outside the project root",
     "SXR-002": "destructive commands",
     "SXR-003": "credential access",
@@ -50,6 +51,8 @@ def _render_one(result: SessionResult, color: bool) -> str:
     meta = f"  {result.tool_call_count} tool call(s) across {result.event_count} event(s)"
     if result.skipped_lines:
         meta += f", {result.skipped_lines} unreadable line(s) skipped"
+    if result.truncated_results:
+        meta += f", {result.truncated_results} oversized result(s) scanned only in part"
     lines.append(meta)
     if result.project_root:
         lines.append(f"  project root: {result.project_root}")
@@ -115,7 +118,13 @@ def render_summary(results: list, color: bool = True) -> str:
         when = r.last_ts or r.first_ts or "-"
         gc = _GRADE_COLOR.get(r.grade, "")
         grade_field = c(gc, f"{r.grade} ({r.grade_score:>3}/100)")
-        lines.append(f"  {grade_field}  {bits:<24}  {total:>2} total  {when}  {r.session_id}  {r.path}")
+        marks = []
+        if r.skipped_lines:
+            marks.append(f"!{r.skipped_lines} unreadable")
+        if r.truncated_results:
+            marks.append(f"!{r.truncated_results} truncated")
+        mark = ("  " + ", ".join(marks)) if marks else ""
+        lines.append(f"  {grade_field}  {bits:<24}  {total:>2} total{mark}  {when}  {r.session_id}  {r.path}")
     return "\n".join(lines)
 
 
@@ -136,6 +145,7 @@ def _session_payload(result: SessionResult) -> dict:
         "event_count": result.event_count,
         "tool_call_count": result.tool_call_count,
         "skipped_lines": result.skipped_lines,
+        "truncated_results": result.truncated_results,
         "first_ts": result.first_ts,
         "last_ts": result.last_ts,
         "grade": result.grade,

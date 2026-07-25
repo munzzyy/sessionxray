@@ -17,12 +17,20 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 MAX_LINE_BYTES = 5_000_000  # guard against a pathological single line
-MAX_RESULT_TEXT = 4_000  # cap how much of a tool result we hold in memory / scan
+# How much of a tool result we retain and scan. This has to be well past the
+# size of an ordinary fetched page: an injection payload sitting in an HTML
+# comment at the bottom of a normal-length release-notes page lives thousands
+# of bytes in, so a 4 KB budget silently missed it. Anything past this cap is
+# not scanned, and every result that hit it is counted and surfaced so a
+# "clean" grade on a truncated result is never mistaken for a genuinely clean
+# one.
+MAX_RESULT_TEXT = 262_144
 
 
 @dataclass
@@ -41,6 +49,7 @@ class ToolResultText:
     tool_use_id: str
     text: str
     tool_name: str = ""
+    truncated: bool = False  # the original result ran past MAX_RESULT_TEXT
 
 
 @dataclass
@@ -51,6 +60,7 @@ class ParsedSession:
     skipped_lines: int
     tool_calls: list = field(default_factory=list)  # list[ToolCall]
     tool_results: list = field(default_factory=list)  # list[ToolResultText]
+    truncated_results: int = 0  # results whose tail was too long to scan
     project_root: str = ""
     first_ts: Optional[str] = None
     last_ts: Optional[str] = None
@@ -133,15 +143,45 @@ def parse_session(path) -> ParsedSession:
         skipped_lines=skipped,
         tool_calls=tool_calls,
         tool_results=tool_results,
+        truncated_results=sum(1 for tr in tool_results if tr.truncated),
         project_root=_majority(cwd_counts),
         first_ts=first_ts,
         last_ts=last_ts,
     )
 
 
+_WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _to_posix_path(p):
+    """Rewrite a Windows-shaped path to a stable POSIX form so every downstream
+    posixpath assumption holds when the transcript came off a Windows machine.
+    `C:\\Users\\dev` -> `/c/Users/dev`; `\\\\host\\share` -> `//host/share`. A path
+    that is already POSIX (or isn't a path at all) comes back unchanged, so this
+    is a no-op on the ordinary case. Without it a Windows absolute path reads as
+    relative and gets joined onto the cwd, and its sensitive suffix (`\\.aws`,
+    `\\.ssh`) never matches the POSIX-shaped rules."""
+    if not isinstance(p, str) or not p:
+        return p
+    if _WIN_DRIVE_RE.match(p):
+        return "/" + p[0].lower() + "/" + p[2:].lstrip("\\/").replace("\\", "/")
+    if p.startswith("\\\\"):
+        return "//" + p[2:].replace("\\", "/")
+    return p
+
+
+def _canonicalize_paths(inp: dict) -> None:
+    """Rewrite the path-bearing fields of a tool call's input to POSIX in place."""
+    for key in ("file_path", "path", "notebook_path"):
+        v = inp.get(key)
+        if isinstance(v, str) and v:
+            inp[key] = _to_posix_path(v)
+
+
 def _absorb_event(idx: int, event: dict, tool_calls: list, tool_results: list, cwd_counts: dict) -> None:
     cwd = event.get("cwd")
     if isinstance(cwd, str) and cwd:
+        cwd = _to_posix_path(cwd)
         cwd_counts[cwd] = cwd_counts.get(cwd, 0) + 1
     else:
         cwd = ""
@@ -158,13 +198,15 @@ def _absorb_event(idx: int, event: dict, tool_calls: list, tool_results: list, c
             tuid = block.get("tool_use_id")
             if isinstance(tuid, str):
                 result_tool_use_id = tuid
-            text = _extract_content_text(block.get("content"))
+            text, truncated = _extract_content_text(block.get("content"))
             if text:
-                tool_results.append(ToolResultText(index=idx, tool_use_id=result_tool_use_id, text=text))
+                tool_results.append(ToolResultText(
+                    index=idx, tool_use_id=result_tool_use_id, text=text, truncated=truncated))
             continue
         name = _first_str(block, "name", "tool", "tool_name")
         inp = _first_dict(block, "input", "parameters", "params")
         if isinstance(name, str) and isinstance(inp, dict):
+            _canonicalize_paths(inp)
             tuid = _first_str(block, "id", "tool_use_id")
             tool_calls.append(ToolCall(
                 index=idx,
@@ -175,9 +217,10 @@ def _absorb_event(idx: int, event: dict, tool_calls: list, tool_results: list, c
                 tool_use_id=tuid or "",
             ))
 
-    extra = _extract_tool_use_result(event.get("toolUseResult"))
+    extra, extra_truncated = _extract_tool_use_result(event.get("toolUseResult"))
     if extra:
-        tool_results.append(ToolResultText(index=idx, tool_use_id=result_tool_use_id, text=extra))
+        tool_results.append(ToolResultText(
+            index=idx, tool_use_id=result_tool_use_id, text=extra, truncated=extra_truncated))
 
 
 def _first_str(d: dict, *keys) -> Optional[str]:
@@ -205,14 +248,24 @@ def _content_blocks(message) -> list:
     return []
 
 
-def _extract_content_text(content) -> str:
+def _cap(text: str):
+    """Cap a result body at the scan budget, reporting whether it overran."""
+    if len(text) > MAX_RESULT_TEXT:
+        return text[:MAX_RESULT_TEXT], True
+    return text, False
+
+
+def _extract_content_text(content):
+    """Return (text, truncated); text is capped at MAX_RESULT_TEXT."""
     if isinstance(content, str):
-        return content[:MAX_RESULT_TEXT]
+        return _cap(content)
     if isinstance(content, list):
         parts = []
         total = 0
+        overran = False
         for item in content:
             if total >= MAX_RESULT_TEXT:
+                overran = True
                 break
             if isinstance(item, dict):
                 t = item.get("text")
@@ -223,21 +276,23 @@ def _extract_content_text(content) -> str:
             if isinstance(t, str) and t:
                 parts.append(t)
                 total += len(t)
-        return "\n".join(parts)[:MAX_RESULT_TEXT]
-    return ""
+        text, capped = _cap("\n".join(parts))
+        return text, overran or capped
+    return "", False
 
 
-def _extract_tool_use_result(result) -> str:
+def _extract_tool_use_result(result):
+    """Return (text, truncated); text is capped at MAX_RESULT_TEXT."""
     if isinstance(result, str):
-        return result[:MAX_RESULT_TEXT]
+        return _cap(result)
     if isinstance(result, dict):
         parts = []
         for key in ("stdout", "stderr", "content", "result", "codeText"):
             v = result.get(key)
             if isinstance(v, str) and v:
                 parts.append(v)
-        return "\n".join(parts)[:MAX_RESULT_TEXT]
-    return ""
+        return _cap("\n".join(parts))
+    return "", False
 
 
 def _correlate_result_names(tool_calls: list, tool_results: list) -> None:

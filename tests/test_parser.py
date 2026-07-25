@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sessionxray.discovery import discover_sessions, parse_session
+from sessionxray.discovery import MAX_RESULT_TEXT, discover_sessions, parse_session
 from tests._helpers import DEFAULT_ROOT, assistant_event, result_event, write_session
 
 
@@ -125,6 +125,39 @@ class MalformedLines(unittest.TestCase):
         path.write_text(json.dumps(event) + "\n", encoding="utf-8")
         parsed = parse_session(path)
         self.assertEqual(parsed.session_id, "abc123")
+
+
+class ResultTruncation(unittest.TestCase):
+    def test_oversized_result_is_marked_truncated(self):
+        big = "x" * (MAX_RESULT_TEXT + 500)
+        events = [assistant_event(0, "WebFetch", {"url": "https://x.test"}),
+                  result_event(0, "tu_0", text=big)]
+        parsed = parse_session(write_session(events))
+        self.assertEqual(parsed.truncated_results, 1)
+        self.assertTrue(parsed.tool_results[0].truncated)
+        self.assertLessEqual(len(parsed.tool_results[0].text), MAX_RESULT_TEXT)
+
+    def test_ordinary_result_is_not_truncated(self):
+        events = [assistant_event(0, "WebFetch", {"url": "https://x.test"}),
+                  result_event(0, "tu_0", text="a short page")]
+        parsed = parse_session(write_session(events))
+        self.assertEqual(parsed.truncated_results, 0)
+        self.assertFalse(parsed.tool_results[0].truncated)
+
+
+class WindowsPathCanonicalization(unittest.TestCase):
+    def test_windows_cwd_and_path_become_posix(self):
+        events = [assistant_event(0, "Read", {"file_path": "C:\\Users\\dev\\.aws\\credentials"},
+                                  cwd="C:\\Users\\dev\\widget-app")]
+        parsed = parse_session(write_session(events))
+        self.assertEqual(parsed.project_root, "/c/Users/dev/widget-app")
+        self.assertEqual(parsed.tool_calls[0].input["file_path"], "/c/Users/dev/.aws/credentials")
+        self.assertEqual(parsed.tool_calls[0].cwd, "/c/Users/dev/widget-app")
+
+    def test_posix_paths_are_left_unchanged(self):
+        events = [assistant_event(0, "Read", {"file_path": f"{DEFAULT_ROOT}/src/app.py"})]
+        parsed = parse_session(write_session(events))
+        self.assertEqual(parsed.tool_calls[0].input["file_path"], f"{DEFAULT_ROOT}/src/app.py")
 
 
 class Discovery(unittest.TestCase):

@@ -12,7 +12,7 @@ import re
 
 from ..discovery import ParsedSession
 from ..finding import Category, Severity
-from ._util import bash_command, classify_tool, extract_hosts, field_str, flatten_text, is_external_host, mk
+from ._util import bash_command_raw, classify_tool, extract_hosts, field_str, flatten_text, is_external_host, mk
 
 RULE_ID = "SXR-004"
 _I = re.IGNORECASE
@@ -59,7 +59,6 @@ _POST_RE = re.compile(
     r")",
     _I,
 )
-_EGRESS_TOOL_RE = re.compile(r"\b(?:curl|wget|nc|ncat|httpie|http)\b", _I)
 
 
 def check(session: ParsedSession) -> list:
@@ -131,7 +130,7 @@ def _add(findings, seen, tc, tag, sev, title, detail, evidence, remediation) -> 
 def _egress_text(tc):
     kind = classify_tool(tc.tool_name)
     if kind == "bash":
-        return bash_command(tc), False
+        return bash_command_raw(tc), False
     if kind == "web":
         return field_str(tc.input, "url") or field_str(tc.input, "query"), True
     if kind == "mcp":
@@ -140,6 +139,8 @@ def _egress_text(tc):
 
 
 def _hosts_for(text: str, is_web: bool) -> list:
-    if not is_web and not _EGRESS_TOOL_RE.search(text):
-        return []
+    # A URL with a real host in it is the evidence of a contact, whatever tool
+    # carried it -- git clone, pip, scp, or a language runtime's own HTTP call
+    # leave the machine just as surely as curl does. Gating on the tool name
+    # used to make every https contact from anything but curl/wget invisible.
     return [h for h in extract_hosts(text) if is_external_host(h)]

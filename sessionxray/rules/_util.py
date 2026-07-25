@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from ..discovery import ToolCall
+from ..discovery import ToolCall, _to_posix_path
 from ..finding import Category, Finding, Severity
 
 # A key name ending in one of these tokens, optionally prefixed by another
@@ -173,8 +173,94 @@ def strip_heredocs(text: str) -> str:
 
 
 def bash_command(tc: ToolCall) -> str:
-    """A Bash tool call's command text, with heredoc bodies blanked out."""
+    """A Bash tool call's command text, with heredoc bodies blanked out.
+
+    Use this only for rules that read shell *syntax* (a redirect, a clobber) --
+    a '>' inside an embedded HTML/JSON heredoc body would otherwise read as a
+    real shell operator. Rules matching content (a credential path, curl|sh, a
+    URL) want the body intact and should use bash_command_raw instead."""
     return strip_heredocs(field_str(tc.input, "command"))
+
+
+def bash_command_raw(tc: ToolCall) -> str:
+    """A Bash tool call's command text with heredoc bodies left intact.
+
+    A full credential-exfil chain hidden inside `python3 - <<'EOF' ... EOF`
+    lives entirely in the heredoc body, so any rule that matches on content
+    rather than shell syntax has to see it."""
+    return field_str(tc.input, "command")
+
+
+# MCP inputs are arbitrary per-server schemas, so this is best-effort by
+# construction: pull anything under a path-shaped key into the path checks and
+# anything under a command-shaped key into the command checks. Keys are matched
+# on whole underscore-delimited segments so `file_path` and `target` hit but a
+# `pathological` field would not.
+_MCP_PATH_KEY_RE = re.compile(
+    r"(?i)(?:^|_)(?:path|file|filename|filepath|dir|directory|target|dest|destination)(?:_|$)")
+_MCP_CMD_KEY_RE = re.compile(
+    r"(?i)(?:^|_)(?:command|cmd|script|code|args|argv|shell)(?:_|$)")
+
+
+def _strings_in(value, limit: int = 50) -> list:
+    out: list = []
+    stack = [value]
+    while stack and len(out) < limit:
+        v = stack.pop()
+        if isinstance(v, str):
+            if v:
+                out.append(v)
+        elif isinstance(v, dict):
+            stack.extend(v.values())
+        elif isinstance(v, list):
+            stack.extend(v[:200])
+    return out
+
+
+def _collect_by_key(inp: dict, key_re) -> list:
+    found: list = []
+    if not isinstance(inp, dict):
+        return found
+    stack = [(inp, 0)]
+    visited = 0
+    while stack and visited < 500 and len(found) < 200:
+        v, depth = stack.pop()
+        visited += 1
+        if isinstance(v, dict) and depth < 6:
+            for k, vv in v.items():
+                if isinstance(k, str) and key_re.search(k):
+                    found.extend(_strings_in(vv))
+                if isinstance(vv, (dict, list)):
+                    stack.append((vv, depth + 1))
+        elif isinstance(v, list) and depth < 6:
+            for vv in v[:200]:
+                stack.append((vv, depth + 1))
+    return found
+
+
+def mcp_paths(tc: ToolCall) -> list:
+    """Path-like string values from an MCP tool call's arbitrary input.
+
+    MCP inputs are canonicalized here rather than in discovery: the file/path
+    fields of a normal tool call get POSIX-ified up front, but MCP keys are
+    arbitrary (`target`, `dest`, ...) and never pass through that step. Without
+    this a Windows path under such a key (`C:\\Windows\\...`) reads as relative,
+    gets joined under cwd, and slips past the outside-root check."""
+    return [_to_posix_path(p) for p in _collect_by_key(tc.input, _MCP_PATH_KEY_RE)]
+
+
+def mcp_command_text(tc: ToolCall) -> str:
+    """Command-like string values from an MCP tool call, joined for scanning."""
+    return "\n".join(_collect_by_key(tc.input, _MCP_CMD_KEY_RE))
+
+
+_MCP_WRITE_RE = re.compile(
+    r"(?i)(?:^|_)(?:write|create|edit|append|put|save|update|delete|remove|move|rename|mkdir|copy)(?:_|$)")
+
+
+def mcp_is_write(tool_name: str) -> bool:
+    """Guess whether an MCP tool mutates the filesystem, from its verb."""
+    return bool(_MCP_WRITE_RE.search(tool_name or ""))
 
 
 def mask_quoted(text: str) -> str:
@@ -242,12 +328,80 @@ def split_bash_segments(cmd: str) -> list:
 
 _URL_RE = re.compile(r"https?://([^\s/'\"<>\\)]+)", re.IGNORECASE)
 
+# A bare host handed to an egress tool: `curl collector.example.net/upload` with
+# no scheme. Requires a real-looking TLD so a plain filename argument doesn't get
+# mistaken for a host.
+_EGRESS_TOOLS = {"curl", "curl.exe", "wget", "wget.exe", "nc", "ncat", "httpie", "http"}
+_HOST_TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9.\-]*\.[a-z]{2,}(?:[:/]|$)", re.IGNORECASE)
+# Options whose *next* token is a value, not a host -- skip that value so
+# `curl -o out.txt` and `curl --output result.dat` stay silent.
+_VALUE_OPTS_LONG = {
+    "--data", "--data-raw", "--data-binary", "--data-urlencode", "--header",
+    "--output", "--form", "--user", "--referer", "--cookie", "--upload-file", "--config",
+}
+# Short options whose value is the rest of the same token (`-XPOST`, `-dfoo`) or,
+# when nothing is attached, the next token (`-d @secret`). `-O`/`--remote-name`
+# is deliberately absent: it takes no value, so `curl -O host` must still see the
+# host as the next token.
+_VALUE_OPTS_SHORT = set("oHdFTKbeAxuX")
+
+
+def _clean_host(token: str) -> str:
+    return token.split("@")[-1].split("/")[0].split(":")[0].strip().lower()
+
+
+def _schemeless_hosts(text: str) -> list:
+    """Hosts passed to an egress tool without a scheme -- the presence of the
+    tool is what tells us the bare token is a destination, not a filename."""
+    found: list = []
+    tokens = text.split()
+    i, n = 0, len(tokens)
+    while i < n:
+        if tokens[i].lower().rstrip(";|&") not in _EGRESS_TOOLS:
+            i += 1
+            continue
+        j = i + 1
+        while j < n:
+            t = tokens[j]
+            if t in ("|", "||", "&&", "&", ";"):
+                break
+            if t.startswith("--"):
+                opt = t.split("=", 1)[0]
+                j += 2 if (opt in _VALUE_OPTS_LONG and "=" not in t) else 1
+                continue
+            if t.startswith("-"):
+                # Clustered short flags (`-fsSL`, `-XPOST`): walk to the first
+                # char that takes a value. If it sits at the end of the token
+                # its value is the *next* token, so skip that too; otherwise the
+                # rest of this token is the value and the next token is untouched
+                # -- so `-XPOST host` and `-O host` no longer swallow the host.
+                body = t[1:]
+                skip_next = False
+                for idx, ch in enumerate(body):
+                    if ch in _VALUE_OPTS_SHORT:
+                        skip_next = idx == len(body) - 1
+                        break
+                j += 2 if skip_next else 1
+                continue
+            if _HOST_TOKEN_RE.match(t):
+                host = _clean_host(t)
+                if host and "." in host:
+                    found.append(host)
+                break
+            j += 1  # a non-host positional (a bare `POST`); keep looking
+        i = j if j > i else i + 1
+    return found
+
 
 def extract_hosts(text: str) -> list:
-    hosts = []
-    for m in _URL_RE.finditer(text or ""):
-        host = m.group(1).split("@")[-1].split("/")[0].split(":")[0].strip().lower()
-        if host:
+    text = text or ""
+    hosts: list = []
+    for m in _URL_RE.finditer(text):
+        host = _clean_host(m.group(1))
+        if host and host not in hosts:
+            hosts.append(host)
+    for host in _schemeless_hosts(text):
+        if host not in hosts:
             hosts.append(host)
     return hosts
 

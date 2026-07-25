@@ -56,6 +56,7 @@ def scan_session(path, project_root_override=None) -> SessionResult:
         event_count=parsed.event_count,
         tool_call_count=len(parsed.tool_calls),
         skipped_lines=parsed.skipped_lines,
+        truncated_results=parsed.truncated_results,
         first_ts=parsed.first_ts,
         last_ts=parsed.last_ts,
         grade=g,

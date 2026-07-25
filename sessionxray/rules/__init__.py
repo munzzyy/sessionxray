@@ -6,6 +6,7 @@ from . import (
     destructive,
     filesystem,
     injection,
+    integrity,
     network,
     persistence,
     remote_code,
@@ -14,6 +15,7 @@ from . import (
 
 # Order is cosmetic; findings are sorted by severity at report time.
 ALL_RULES = [
+    integrity.check,
     filesystem.check,
     destructive.check,
     secrets.check,

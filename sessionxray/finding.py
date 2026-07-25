@@ -29,6 +29,7 @@ class Severity(enum.IntEnum):
 
 
 class Category(str, enum.Enum):
+    INTEGRITY = "transcript-integrity"
     FILESYSTEM = "filesystem-reach"
     DESTRUCTIVE = "destructive-command"
     SECRET = "credential-access"
@@ -70,6 +71,7 @@ class SessionResult:
     event_count: int = 0
     tool_call_count: int = 0
     skipped_lines: int = 0
+    truncated_results: int = 0
     first_ts: Optional[str] = None
     last_ts: Optional[str] = None
     grade: str = "A"

@@ -11,7 +11,7 @@ import re
 
 from ..discovery import ParsedSession
 from ..finding import Category, Severity
-from ._util import bash_command, classify_tool, mask_quoted, mk
+from ._util import bash_command, classify_tool, mask_quoted, mcp_command_text, mk
 
 RULE_ID = "SXR-002"
 _I = re.IGNORECASE
@@ -24,7 +24,10 @@ _PATTERNS = [
     (re.compile(r"\bmkfs(?:\.\w+)?\b", _I),
      "Filesystem format command",
      "mkfs rebuilds a filesystem in place, destroying whatever was on it."),
-    (re.compile(r"\bdd\b[^\n]*\bof=(?:/dev/|[A-Za-z]:\\\\\.\\\\)", _I),
+    # of=/dev/sda on POSIX, or the Windows raw-device path of=\\.\PhysicalDrive0.
+    # The old Windows branch required a literal doubled-backslash device path
+    # (`X:\\.\\`) that no real command ever produces, so it never fired.
+    (re.compile(r"\bdd\b[^\n]*\bof=(?:/dev/|\\\\\.\\|//\./)", _I),
      "Raw disk write with dd",
      "dd writing to a device node overwrites raw disk contents with no confirmation and no undo."),
     (re.compile(r"\bDROP\s+(?:TABLE|DATABASE|SCHEMA)\b", _I),
@@ -59,9 +62,13 @@ def check(session: ParsedSession) -> list:
     findings: list = []
     seen: set = set()
     for tc in session.tool_calls:
-        if classify_tool(tc.tool_name) != "bash":
+        kind = classify_tool(tc.tool_name)
+        if kind == "bash":
+            cmd = bash_command(tc)
+        elif kind == "mcp":
+            cmd = mcp_command_text(tc)
+        else:
             continue
-        cmd = bash_command(tc)
         if not cmd:
             continue
         for rx, title, detail in _PATTERNS:

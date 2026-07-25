@@ -126,8 +126,37 @@ class CLI(unittest.TestCase):
         self.assertEqual(code, 2)
 
     def test_invalid_fail_on_is_usage_error(self):
-        with self.assertRaises(SystemExit):
-            self._run([str(FIXTURES / "benign" / "benign-session.jsonl"), "--fail-on", "not-a-severity"])
+        # An invalid argument is a usage error (exit 2), distinct from exit 1
+        # which means "a finding at or above --fail-on was found".
+        code, _ = self._run([str(FIXTURES / "benign" / "benign-session.jsonl"), "--fail-on", "not-a-severity"])
+        self.assertEqual(code, 2)
+
+    def test_relative_project_root_is_usage_error(self):
+        # A relative root can never match the transcript's absolute paths, so it
+        # is rejected rather than turning a clean session into false HIGHs.
+        code, _ = self._run([str(FIXTURES / "benign" / "benign-session.jsonl"),
+                             "--no-color", "--project-root", "."])
+        self.assertEqual(code, 2)
+
+    def test_absolute_project_root_still_accepted(self):
+        code, _ = self._run([str(FIXTURES / "benign" / "benign-session.jsonl"), "--no-color",
+                             "--project-root", "/home/testuser/widget-app", "--fail-on", "none"])
+        self.assertEqual(code, 0)
+
+    def test_unreadable_transcript_summary_flags_skipped(self):
+        tmp = Path(tempfile.mkdtemp()) / "notjson.jsonl"
+        tmp.write_text("this is not json at all\nneither is this\n", encoding="utf-8")
+        code, out = self._run([str(tmp), "--summary", "--no-color", "--fail-on", "none"])
+        self.assertEqual(code, 0)
+        self.assertIn("unreadable", out)
+
+    def test_unreadable_transcript_emits_integrity_finding(self):
+        tmp = Path(tempfile.mkdtemp()) / "notjson.jsonl"
+        tmp.write_text("garbage one\ngarbage two\n", encoding="utf-8")
+        code, out = self._run([str(tmp), "--json", "--fail-on", "none"])
+        payload = json.loads(out)
+        rules = [f["rule_id"] for f in payload["sessions"][0]["findings"]]
+        self.assertIn("SXR-000", rules)
 
     def test_summary_mode_over_a_directory(self):
         code, out = self._run([str(FIXTURES / "malicious"), "--summary", "--no-color", "--fail-on", "none"])
@@ -154,6 +183,21 @@ class CLI(unittest.TestCase):
         code, out = self._run([str(path), "--project-root", "/outside", "--json", "--fail-on", "none"])
         payload = json.loads(out)
         self.assertEqual(payload["sessions"][0]["findings"], [])
+
+    def test_windows_project_root_override_is_canonicalized(self):
+        # A Windows-style --project-root must be POSIX-ified the same way the
+        # transcript's own cwd/paths are (`C:\MyProject` -> `/c/MyProject`), or
+        # it never matches them and every in-root op grades as a false SXR-001.
+        path = write_session([
+            assistant_event(0, "Write", {"file_path": "C:\\MyProject\\src\\app.py", "content": "x"},
+                            cwd="C:\\MyProject"),
+            assistant_event(1, "Read", {"file_path": "C:\\MyProject\\README.md"},
+                            cwd="C:\\MyProject"),
+        ])
+        code, out = self._run([str(path), "--project-root", "C:\\MyProject", "--json", "--fail-on", "none"])
+        payload = json.loads(out)
+        outside = [f for f in payload["sessions"][0]["findings"] if f["rule_id"] == "SXR-001"]
+        self.assertEqual(outside, [])
 
     def test_no_targets_and_no_tail_is_usage_error(self):
         # targets is nargs="*" (not "+") so --tail can run with none given;

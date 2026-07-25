@@ -8,7 +8,7 @@ import re
 
 from ..discovery import ParsedSession
 from ..finding import Category, Severity
-from ._util import bash_command, classify_tool, mk
+from ._util import bash_command_raw, classify_tool, mcp_command_text, mk
 
 RULE_ID = "SXR-005"
 _I = re.IGNORECASE
@@ -49,9 +49,13 @@ def check(session: ParsedSession) -> list:
     findings: list = []
     seen: set = set()
     for tc in session.tool_calls:
-        if classify_tool(tc.tool_name) != "bash":
+        kind = classify_tool(tc.tool_name)
+        if kind == "bash":
+            cmd = bash_command_raw(tc)
+        elif kind == "mcp":
+            cmd = mcp_command_text(tc)
+        else:
             continue
-        cmd = bash_command(tc)
         if not cmd:
             continue
         for rx, sev, title, detail in _PATTERNS:

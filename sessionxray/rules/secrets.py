@@ -11,7 +11,8 @@ import re
 
 from ..discovery import ParsedSession
 from ..finding import Category, Severity
-from ._util import bash_command, classify_tool, field_str, mk
+from ._util import (bash_command_raw, classify_tool, field_str, flatten_text,
+                     mcp_command_text, mcp_paths, mk)
 
 RULE_ID = "SXR-003"
 _I = re.IGNORECASE
@@ -27,7 +28,13 @@ _SENSITIVE_PATH_RE = re.compile(
     r"/\.claude/[\w.\-]*credential[\w.\-]*|/\.config/claude\b|"
     r"Login\s?Data|/Cookies\b|cookies\.sqlite|"
     r"security\s+find-generic-password|"
-    r"\.env(?:\.local|\.production)?\b"
+    r"\.env(?:\.local|\.production)?\b|"
+    # Windows-shaped credential paths, for backslash paths that appear inside a
+    # command string (file-tool paths are canonicalized to POSIX at parse time,
+    # but a path typed into a Bash/cmd line keeps its backslashes).
+    r"\\\.ssh\\|\\\.aws\\credentials\b|\\\.gnupg\b|\\_netrc\b|"
+    r"\\\.docker\\config\.json\b|\\\.kube\\config\b|\\gcloud\b|"
+    r"\\Login\s?Data\b"
     r")",
     _I,
 )
@@ -60,18 +67,31 @@ def check(session: ParsedSession) -> list:
         kind = classify_tool(tc.tool_name)
 
         if kind == "bash":
-            cmd = bash_command(tc)
+            cmd = bash_command_raw(tc)
             if cmd:
                 _scan_bash(cmd, tc, findings, seen)
         elif kind == "read":
-            p = field_str(tc.input, "file_path", "path")
+            p = field_str(tc.input, "file_path", "path", "notebook_path")
             if p:
                 _scan_path(p, tc, findings, seen)
         elif kind in ("write", "edit"):
-            p = field_str(tc.input, "file_path", "path")
+            p = field_str(tc.input, "file_path", "path", "notebook_path")
             if p:
                 _scan_path(p, tc, findings, seen)
-            content = field_str(tc.input, "content", "new_string")
+            # flatten_text reaches every written string -- content, new_string,
+            # the edits[*].new_string list a MultiEdit carries, and a
+            # NotebookEdit's new_source -- so a hardcoded key can't hide in
+            # whichever field the tool happens to use.
+            content = flatten_text(tc.input)
+            if content:
+                _scan_literal(content, tc, findings, seen, "the content it wrote")
+        elif kind == "mcp":
+            for p in mcp_paths(tc):
+                _scan_path(p, tc, findings, seen)
+            cmd = mcp_command_text(tc)
+            if cmd:
+                _scan_bash(cmd, tc, findings, seen)
+            content = flatten_text(tc.input)
             if content:
                 _scan_literal(content, tc, findings, seen, "the content it wrote")
     return findings

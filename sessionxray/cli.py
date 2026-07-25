@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import os
+import posixpath
+import re
 import sys
 from pathlib import Path
 
 from . import __version__
-from .discovery import discover_sessions
+from .discovery import _to_posix_path, discover_sessions
 from .finding import Severity
 from .report import render_human, render_json, render_summary
 from .scanner import scan_session
@@ -57,10 +59,27 @@ def _fail_threshold(value: str):
     value = value.strip().lower()
     if value in ("none", "off", "never"):
         return None
-    try:
-        return Severity.parse(value)
-    except ValueError:
-        raise SystemExit(f"sessionxray: invalid --fail-on value {value!r}")
+    return Severity.parse(value)  # ValueError -> usage error (exit 2) in main()
+
+
+_WIN_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _validate_project_root(value: str) -> str:
+    """A --project-root has to be absolute the way the transcript's own paths
+    are, or it can never match any of them -- a relative root like '.' turns
+    every absolute path in the session into a false 'outside the root' finding.
+    Reject anything that isn't absolute so the mistake is caught, not graded."""
+    expanded = os.path.expanduser(value)
+    if expanded.startswith("/"):
+        return posixpath.normpath(expanded)
+    if _WIN_ABS_RE.match(expanded):
+        # A Windows override has to be canonicalized the exact way the
+        # transcript's own cwd/paths are (`C:\MyProject` -> `/c/MyProject`),
+        # or it can never match them and every in-root file op grades as a
+        # false 'outside the root' finding.
+        return posixpath.normpath(_to_posix_path(expanded))
+    raise ValueError(value)
 
 
 def _looks_like_glob(target: str) -> bool:
@@ -106,7 +125,20 @@ def main(argv=None) -> int:
               file=sys.stderr)
         return 2
 
-    threshold = _fail_threshold(args.fail_on)
+    try:
+        threshold = _fail_threshold(args.fail_on)
+    except ValueError:
+        print(f"sessionxray: invalid --fail-on value {args.fail_on!r}", file=sys.stderr)
+        return 2
+
+    project_root = args.project_root
+    if project_root is not None:
+        try:
+            project_root = _validate_project_root(project_root)
+        except ValueError:
+            print("sessionxray: --project-root must be an absolute path as it appears in the "
+                  f"transcript, e.g. /home/me/widget-app (got {args.project_root!r})", file=sys.stderr)
+            return 2
 
     missing = [t for t in args.targets if not _looks_like_glob(t) and not os.path.exists(t)]
     for t in missing:
@@ -120,7 +152,7 @@ def main(argv=None) -> int:
         return 2
 
     try:
-        results = [scan_session(p, args.project_root) for p in paths]
+        results = [scan_session(p, project_root) for p in paths]
     except OSError as e:
         print(f"sessionxray: {e}", file=sys.stderr)
         return 2
