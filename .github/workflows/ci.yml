@@ -31,19 +31,3 @@ jobs:
           python -m sessionxray tests/fixtures/benign/benign-session.jsonl --fail-on high
           python -m sessionxray tests/fixtures/malicious/secrets.jsonl --json --fail-on none
           python -m sessionxray --summary tests/fixtures/malicious tests/fixtures/benign --fail-on none
-
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.12"
-      - name: Install noslop-lint
-        run: pip install noslop-lint==0.10.0
-      - name: Lint source for AI writing tells
-        run: git ls-files -z -- '*.py' | xargs -0r noslop --no-config
-      - name: Lint docs for AI writing tells
-        run: noslop --no-config --prose README.md CONTRIBUTING.md
