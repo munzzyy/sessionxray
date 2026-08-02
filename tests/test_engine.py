@@ -158,6 +158,52 @@ class CLI(unittest.TestCase):
         rules = [f["rule_id"] for f in payload["sessions"][0]["findings"]]
         self.assertIn("SXR-000", rules)
 
+    def test_summary_is_worst_first_by_default(self):
+        code, out = self._run([str(FIXTURES / "malicious"), str(FIXTURES / "benign"),
+                                "--summary", "--no-color", "--fail-on", "none"])
+        self.assertEqual(code, 0)
+        grades = [ln.strip()[0] for ln in out.splitlines() if ln.strip()]
+        order = {"F": 0, "D": 1, "C": 2, "B": 3, "A": 4}
+        self.assertEqual(grades, sorted(grades, key=lambda g: order[g]), grades)
+
+    def test_summary_sort_path_is_filesystem_order(self):
+        code, out = self._run([str(FIXTURES / "malicious"), "--summary", "--no-color",
+                                "--fail-on", "none", "--sort", "path"])
+        paths = [ln.split()[-1] for ln in out.splitlines() if ln.strip()]
+        self.assertEqual(paths, sorted(paths))
+
+    def test_min_grade_drops_the_quiet_sessions(self):
+        code, out = self._run([str(FIXTURES / "malicious"), str(FIXTURES / "benign"),
+                                "--summary", "--no-color", "--fail-on", "none", "--min-grade", "D"])
+        self.assertEqual(code, 0)
+        grades = {ln.strip()[0] for ln in out.splitlines() if ln.strip()}
+        self.assertTrue(grades <= {"D", "F"}, grades)
+        self.assertTrue(grades)
+
+    def test_min_grade_does_not_change_the_exit_code(self):
+        # Filtering the rows is a display choice. --fail-on still answers for
+        # every session scanned, or a quiet-looking report would exit 0 while
+        # hiding the session that failed.
+        code, _ = self._run([str(FIXTURES / "malicious"), "--summary", "--no-color",
+                             "--min-grade", "A", "--fail-on", "high"])
+        self.assertEqual(code, 1)
+
+    def test_min_grade_that_matches_nothing_says_so(self):
+        code, out = self._run([str(FIXTURES / "benign"), "--summary", "--no-color",
+                                "--fail-on", "none", "--min-grade", "F"])
+        self.assertEqual(code, 0)
+        self.assertIn("no session graded", out)
+
+    def test_min_grade_without_summary_is_a_usage_error(self):
+        code, _ = self._run([str(FIXTURES / "benign" / "benign-session.jsonl"),
+                             "--no-color", "--min-grade", "D"])
+        self.assertEqual(code, 2)
+
+    def test_invalid_min_grade_is_a_usage_error(self):
+        code, _ = self._run([str(FIXTURES / "benign"), "--summary", "--no-color",
+                             "--min-grade", "Z"])
+        self.assertEqual(code, 2)
+
     def test_summary_mode_over_a_directory(self):
         code, out = self._run([str(FIXTURES / "malicious"), "--summary", "--no-color", "--fail-on", "none"])
         self.assertEqual(code, 0)

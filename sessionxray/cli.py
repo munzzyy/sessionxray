@@ -12,7 +12,7 @@ from pathlib import Path
 from . import __version__
 from .discovery import _to_posix_path, discover_sessions
 from .finding import Severity
-from .report import render_human, render_json, render_summary
+from .report import parse_grade, render_human, render_json, render_summary
 from .scanner import scan_session
 
 # Where the SessionEnd hook (hooks/sessionxray-sessionend.sh) appends its
@@ -46,6 +46,12 @@ def build_parser() -> argparse.ArgumentParser:
                            "(see hooks/sessionxray-sessionend.sh)")
     p.add_argument("--tail-limit", type=int, default=0, metavar="N",
                    help="with --tail, show only the N most recent entries (default: all)")
+    p.add_argument("--sort", choices=("severity", "path"), default="severity",
+                   help="with --summary, row order: worst session first (default) or by file path")
+    p.add_argument("--min-grade", metavar="LETTER",
+                   help="with --summary, show only sessions graded LETTER or worse "
+                        "(A|B|C|D|F). Does not change the --fail-on exit code, which "
+                        "still considers every session scanned")
     p.add_argument("--fail-on", default="high", metavar="SEVERITY",
                    help="exit non-zero if any finding is at or above this severity "
                         "(critical|high|medium|low|info|none; default: high)")
@@ -131,6 +137,18 @@ def main(argv=None) -> int:
         print(f"sessionxray: invalid --fail-on value {args.fail_on!r}", file=sys.stderr)
         return 2
 
+    min_grade = ""
+    if args.min_grade is not None:
+        if not args.summary:
+            print("sessionxray: --min-grade only applies to --summary", file=sys.stderr)
+            return 2
+        try:
+            min_grade = parse_grade(args.min_grade)
+        except ValueError:
+            print(f"sessionxray: invalid --min-grade value {args.min_grade!r} "
+                  "(use A, B, C, D, or F)", file=sys.stderr)
+            return 2
+
     project_root = args.project_root
     if project_root is not None:
         try:
@@ -161,7 +179,7 @@ def main(argv=None) -> int:
     if args.json:
         output = render_json(results)
     elif args.summary:
-        output = render_summary(results, color=color)
+        output = render_summary(results, color=color, sort=args.sort, min_grade=min_grade)
     else:
         output = render_human(results, color=color)
 

@@ -101,12 +101,41 @@ def _render_one(result: SessionResult, color: bool) -> str:
     return "\n".join(lines)
 
 
-def render_summary(results: list, color: bool = True) -> str:
+_GRADE_RANK = {"A": 0, "B": 1, "C": 2, "D": 3, "F": 4}
+
+
+def grade_rank(letter: str) -> int:
+    return _GRADE_RANK.get((letter or "").strip().upper(), 0)
+
+
+def parse_grade(letter: str) -> str:
+    """Validate a grade letter from the command line, or raise ValueError."""
+    value = (letter or "").strip().upper()
+    if value not in _GRADE_RANK:
+        raise ValueError(letter)
+    return value
+
+
+def _summary_sort_key(r: SessionResult):
+    worst = r.worst()
+    return (-int(worst) if worst is not None else 1, r.grade_score, r.path)
+
+
+def render_summary(results: list, color: bool = True, sort: str = "severity",
+                   min_grade: str = "") -> str:
     def c(code, s):
         return f"{code}{s}{_RESET}" if color else s
 
     if not results:
         return "  sessionxray: no session files matched."
+
+    if min_grade:
+        floor = grade_rank(min_grade)
+        results = [r for r in results if grade_rank(r.grade) >= floor]
+    if sort != "path":
+        results = sorted(results, key=_summary_sort_key)
+    if not results:
+        return f"  sessionxray: no session graded {min_grade} or worse."
 
     lines = []
     for r in results:
