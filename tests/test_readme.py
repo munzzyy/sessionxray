@@ -48,7 +48,9 @@ class FleetTriageBlock(unittest.TestCase):
         for doc, live in zip(documented, rendered):
             # The path column is machine-specific; the README abbreviates it.
             self.assertEqual(_columns(doc), _columns(live))
-            self.assertTrue(live.endswith(doc.split("SESSIONID")[-1].strip().lstrip(".")),
+            # The README documents forward-slash paths; Windows renders native ones.
+            live_posix = live.replace("\\", "/")
+            self.assertTrue(live_posix.endswith(doc.split("SESSIONID")[-1].strip().lstrip(".")),
                             f"row order or file changed:\n  README: {doc}\n  HEAD:   {live}")
 
     def test_documented_command_is_the_one_that_was_run(self):
