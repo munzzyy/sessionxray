@@ -32,6 +32,12 @@ MAX_LINE_BYTES = 5_000_000  # guard against a pathological single line
 # one.
 MAX_RESULT_TEXT = 262_144
 
+# Stand-in for "this transcript never said where its home directory was". It has
+# to be a path that is outside every plausible project root and, crucially, is
+# not itself a sensitive location -- an unknown home that resolves to /root
+# turns every `~/notes.md` read in the file into a sensitive-directory finding.
+NO_HOME = "/__home__"
+
 
 @dataclass
 class ToolCall:
@@ -62,6 +68,7 @@ class ParsedSession:
     tool_results: list = field(default_factory=list)  # list[ToolResultText]
     truncated_results: int = 0  # results whose tail was too long to scan
     project_root: str = ""
+    home: str = NO_HOME  # the recorded machine's home dir, inferred from the transcript
     first_ts: Optional[str] = None
     last_ts: Optional[str] = None
 
@@ -145,6 +152,7 @@ def parse_session(path) -> ParsedSession:
         tool_results=tool_results,
         truncated_results=sum(1 for tr in tool_results if tr.truncated),
         project_root=_majority(cwd_counts),
+        home=infer_home(cwd_counts, tool_calls),
         first_ts=first_ts,
         last_ts=last_ts,
     )
@@ -306,3 +314,29 @@ def _majority(counts: dict) -> str:
     if not counts:
         return ""
     return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
+_HOME_RE = re.compile(r"^(/home/[^/]+|/Users/[^/]+|/c/Users/[^/]+|/root)(?=/|$)")
+
+
+def infer_home(cwd_counts: dict, tool_calls: list) -> str:
+    """Work out what `~` meant on the machine that recorded this transcript.
+
+    Read it off the transcript's own paths -- the busiest cwd first, then any
+    absolute path a file tool recorded. Reading the analyzing machine's $HOME
+    instead makes the same session grade differently depending on who runs the
+    scan, and on Windows (where $HOME is unset or drive-lettered) it collapses
+    to /root and turns every `~/` read into a sensitive-directory finding."""
+    candidates = sorted(cwd_counts, key=lambda k: -cwd_counts[k]) if cwd_counts else []
+    for tc in tool_calls:
+        if not isinstance(tc.input, dict):
+            continue
+        for key in ("file_path", "path", "notebook_path"):
+            v = tc.input.get(key)
+            if isinstance(v, str) and v.startswith("/"):
+                candidates.append(v)
+    for candidate in candidates:
+        m = _HOME_RE.match(candidate)
+        if m:
+            return m.group(1)
+    return NO_HOME
