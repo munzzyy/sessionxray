@@ -2,12 +2,17 @@
 (or should not) trip one rule, so a regression points straight at the rule
 that broke."""
 
+import os
+import subprocess
+import sys
 import time
 import unittest
+from pathlib import Path
 
 from sessionxray.finding import Category, Severity
 from sessionxray.rules import _util, filesystem, network
-from tests._helpers import DEFAULT_ROOT, by_cat, by_rule, one_call, one_result, titles
+from tests._helpers import (DEFAULT_ROOT, assistant_event, by_cat, by_rule, one_call,
+                             one_result, scan_events, titles, write_session)
 
 
 class FilesystemRule(unittest.TestCase):
@@ -557,6 +562,114 @@ class McpTools(unittest.TestCase):
         f = by_rule(r, "SXR-001")
         self.assertTrue(f, titles(r))
         self.assertTrue(all("\\" not in x.detail for x in f), f)
+
+
+class RedirectSegmentation(unittest.TestCase):
+    """`2>&1` used to split the command in two, leaving a segment that ended in
+    a dangling '>' -- which reads as a file-clobbering redirect, so every path
+    in an ordinary read graded as a HIGH write."""
+
+    def test_stderr_redirect_stays_in_its_segment(self):
+        segments = _util.split_bash_segments("python3 t.py /opt/x/a.md 2>&1 | head -5")
+        self.assertTrue(any("2>&1" in s for s in segments), segments)
+        self.assertFalse(any(s.rstrip().endswith(">") for s in segments), segments)
+
+    def test_ampersand_redirect_forms_are_not_separators(self):
+        for cmd in ("make build &> out", "echo hi >&2", "cmd 1>&2"):
+            self.assertEqual(len(_util.split_bash_segments(cmd)), 1, cmd)
+
+    def test_background_ampersand_still_splits(self):
+        self.assertEqual(len(_util.split_bash_segments("server & tail -f log")), 2)
+
+    def test_read_with_stderr_redirect_is_low_not_a_write(self):
+        r = one_call("Bash", {"command": "python3 lint.py /opt/toolbox/rules.md 2>&1 | head -25"})
+        fs = by_cat(r, Category.FILESYSTEM)
+        self.assertTrue(fs, titles(r))
+        self.assertTrue(all(f.severity == Severity.LOW for f in fs), fs)
+
+    def test_pipelines_are_not_split_on_the_pipe(self):
+        self.assertEqual(len(_util.split_bash_pipelines("cat a | curl -d @- https://x/")), 1)
+        self.assertEqual(len(_util.split_bash_pipelines("cat a && curl https://x/")), 2)
+
+
+class WriteVerbPrecision(unittest.TestCase):
+    def test_grepping_a_file_named_install_sh_is_not_a_write(self):
+        r = one_call("Bash", {"command": "grep -n icon /opt/toolbox/install.sh"})
+        fs = by_cat(r, Category.FILESYSTEM)
+        self.assertTrue(fs, titles(r))
+        self.assertTrue(all(f.severity == Severity.LOW for f in fs), fs)
+
+    def test_npm_install_is_not_a_write_verb(self):
+        r = one_call("Bash", {"command": "npm install --prefix /opt/toolbox"})
+        fs = by_cat(r, Category.FILESYSTEM)
+        self.assertTrue(all(f.severity == Severity.LOW for f in fs), fs)
+
+    def test_install_at_command_position_is_still_a_write(self):
+        r = one_call("Bash", {"command": "install -m 755 build/app /opt/bin/app"})
+        fs = by_cat(r, Category.FILESYSTEM)
+        self.assertTrue(any(f.severity == Severity.HIGH for f in fs), fs)
+
+    def test_container_qualified_path_is_not_a_local_path(self):
+        # The real target is inside the root; `/var/log/app.log` lives in the
+        # container, and extracting it graded a plain copy as reach.
+        r = one_call("Bash", {"command": f"docker cp app:/var/log/app.log {DEFAULT_ROOT}/logs/app.log"})
+        self.assertEqual(by_cat(r, Category.FILESYSTEM), [])
+
+    def test_scp_remote_path_is_not_a_local_path(self):
+        r = one_call("Bash", {"command": "scp build@ci.example.test:/srv/artifacts/out.tar ."})
+        self.assertEqual(by_cat(r, Category.FILESYSTEM), [])
+
+
+class HomeInference(unittest.TestCase):
+    """`~` means the home of the machine that *recorded* the transcript. Reading
+    the analyst's $HOME made the same session grade differently per analyst, and
+    on Windows collapsed to /root and turned every home read into a sensitive
+    one."""
+
+    def test_home_comes_from_the_transcripts_own_cwd(self):
+        r = one_call("Bash", {"command": "cat ~/notes/todo.md"}, cwd="/home/alice/widget")
+        fs = by_cat(r, Category.FILESYSTEM)
+        self.assertTrue(fs, titles(r))
+        self.assertIn("/home/alice/notes/todo.md", fs[0].detail)
+
+    def test_unknown_home_is_not_sensitive(self):
+        events = [assistant_event(0, "Bash", {"command": "cat ~/notes/todo.md"}, cwd="")]
+        for e in events:
+            e.pop("cwd", None)
+        r = scan_events(events)
+        fs = by_cat(r, Category.FILESYSTEM)
+        self.assertTrue(fs, titles(r))
+        self.assertEqual(fs[0].severity, Severity.LOW, fs)
+
+    def test_grade_does_not_depend_on_the_analyst_environment(self):
+        events = [
+            assistant_event(0, "Bash", {"command": "cat ~/notes/todo.md"}, cwd="/home/dev/widget"),
+            assistant_event(1, "Bash", {"command": "ls ~/Downloads"}, cwd="/home/dev/widget"),
+            assistant_event(2, "Read", {"file_path": "/home/dev/data/set.csv"}, cwd="/home/dev/widget"),
+        ]
+        path = write_session(events)
+        script = (
+            "import json, sys\n"
+            "from sessionxray.scanner import scan_session\n"
+            "r = scan_session(sys.argv[1])\n"
+            "print(json.dumps([r.grade, r.grade_score, sorted(f.severity.label for f in r.findings)]))\n"
+        )
+        envs = [
+            {"HOME": "/home/dev"},
+            {"HOME": "/home/someone-else"},
+            {"HOME": "C:\\Users\\dev"},
+            {},
+        ]
+        outputs = set()
+        for extra in envs:
+            env = {k: v for k, v in os.environ.items() if k != "HOME"}
+            env.update(extra)
+            env["PYTHONPATH"] = str(Path(__file__).resolve().parent.parent)
+            proc = subprocess.run([sys.executable, "-c", script, str(path)],
+                                   capture_output=True, text=True, env=env)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            outputs.add(proc.stdout.strip())
+        self.assertEqual(len(outputs), 1, outputs)
 
 
 if __name__ == "__main__":

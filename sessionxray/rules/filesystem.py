@@ -12,14 +12,14 @@ tool use.
 
 from __future__ import annotations
 
-import os
 import posixpath
 import re
 
-from ..discovery import ParsedSession
+from ..discovery import NO_HOME, ParsedSession
 from ..finding import Category, Severity
-from ._util import (bash_command, classify_tool, field_str, mask_quoted, mcp_is_write,
-                     mcp_paths, mk, split_bash_segments)
+from ._util import (bash_command, classify_tool, field_str, is_scratch_path, is_under,
+                     mask_quoted, mcp_is_write, mcp_paths, mk, normalize_path,
+                     split_bash_segments)
 
 RULE_ID = "SXR-001"
 
@@ -31,15 +31,23 @@ _SENSITIVE_ABS = ("/etc", "/root")
 _WRITE_RE = re.compile(
     r"(?:>>?(?!&)(?!\s*/dev/(?:null|stdout|stderr|tty)\b)|"
     r"\btee\b|\bcp\b|\bmv\b|\brm\b|\bmkdir\b|\btouch\b|\bdd\b|"
-    r"\bsed\s+-i\b|\binstall\b|\brsync\b|\bchmod\b|\bchown\b|\btruncate\b)",
+    r"\bsed\s+-i\b|\brsync\b|\bchmod\b|\bchown\b|\btruncate\b)",
     re.IGNORECASE,
 )
+# install(1) only writes when it is the command being run. As a bare word it is
+# far more often part of a filename (`install.sh`) or another tool's subcommand
+# (`npm install`, `pip install`), and matching those turned every path in the
+# line into a write.
+_INSTALL_CMD_RE = re.compile(r"^\s*(?:sudo\s+)?install\b", re.IGNORECASE)
 
 # A leading "/" only starts an absolute path if nothing path-like sits right
 # before it. Without that boundary check, a *relative* path like
 # "tests/corpus/malicious" reads its own internal "/corpus/malicious" as if
 # it were an unrelated absolute path -- a real, high-volume false positive.
-_PATH_RE = re.compile(r"(?<![\w./\-])(~(?:/[\w.\-]+)*|/(?:[\w.\-]+/)*[\w.\-]+)")
+# ':' and '@' are in the class for the same reason: the "/bar" in
+# `docker cp foo:/bar`, `scp host:/srv/x` or `docker run -v vol:/mnt` is a path
+# on the *other* side of the connection, not a local one.
+_PATH_RE = re.compile(r"(?<![\w./\-:@])(~(?:/[\w.\-]+)*|/(?:[\w.\-]+/)*[\w.\-]+)")
 _TRAVERSAL_RE = re.compile(r"(?:^|[\s\"'=])(\.\.(?:/[\w.\-]+)+)")
 # The scheme is bounded to 32 chars instead of an unbounded \w+: real URI
 # schemes (http, https, mcp, vscode-insiders, ...) are always short, but an
@@ -53,6 +61,7 @@ _QUOTED_RE = re.compile(r'"([^"\n]+)"|\'([^\'\n]+)\'')
 def check(session: ParsedSession) -> list:
     findings: list = []
     root = posixpath.normpath(session.project_root) if session.project_root else None
+    home = session.home or NO_HOME
     seen: set = set()
 
     for tc in session.tool_calls:
@@ -60,14 +69,14 @@ def check(session: ParsedSession) -> list:
         if kind in ("read", "write", "edit"):
             p = field_str(tc.input, "file_path", "path", "notebook_path")
             if p:
-                f = _check_path(p, tc.cwd, root, is_write=(kind != "read"),
+                f = _check_path(p, tc.cwd, root, home, is_write=(kind != "read"),
                                  evidence=p, event_index=tc.index, tool_name=tc.tool_name, seen=seen)
                 if f:
                     findings.append(f)
         elif kind == "mcp":
             is_write = mcp_is_write(tc.tool_name)
             for p in mcp_paths(tc):
-                f = _check_path(p, tc.cwd, root, is_write=is_write,
+                f = _check_path(p, tc.cwd, root, home, is_write=is_write,
                                  evidence=p, event_index=tc.index, tool_name=tc.tool_name, seen=seen)
                 if f:
                     findings.append(f)
@@ -82,7 +91,8 @@ def check(session: ParsedSession) -> list:
                 # Quotes are masked only for deciding write-vs-read: a write
                 # verb inside a quoted grep/sed pattern ("mkdir failed") is
                 # text being searched for, not a command being run.
-                is_write = bool(_WRITE_RE.search(mask_quoted(segment)))
+                masked = mask_quoted(segment)
+                is_write = bool(_WRITE_RE.search(masked)) or bool(_INSTALL_CMD_RE.match(masked))
                 # Strip URLs before hunting for filesystem paths: a URL's path
                 # component (the "/upload" in https://host/upload) looks
                 # exactly like an absolute path and is the network rule's job.
@@ -94,10 +104,10 @@ def check(session: ParsedSession) -> list:
                 # remove it, so the unquoted scan below doesn't also pick up
                 # a fragment of it.
                 seg_unquoted = _consume_quoted_paths(
-                    seg_no_urls, tc, root, is_write, cmd, findings, seen)
+                    seg_no_urls, tc, root, home, is_write, cmd, findings, seen)
                 for m in _PATH_RE.finditer(seg_unquoted):
                     p = m.group(1)
-                    f = _check_path(p, tc.cwd, root, is_write=is_write,
+                    f = _check_path(p, tc.cwd, root, home, is_write=is_write,
                                      evidence=cmd, event_index=tc.index, tool_name=tc.tool_name, seen=seen)
                     if f:
                         findings.append(f)
@@ -119,24 +129,14 @@ def check(session: ParsedSession) -> list:
 
 
 _DEV_NOISE = ("/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/zero", "/dev/random", "/dev/urandom")
-# The scratch area is where a well-behaved agent is expected to put throwaway
-# files; a write there is common enough that treating it the same as a write to
-# /etc would drown out findings that actually deserve HIGH. These are the paths
-# a transcript uses, so they stay POSIX no matter what OS sessionxray runs on
-# (/var/folders is macOS's per-user temp).
-_SCRATCH_PREFIXES = ("/tmp", "/var/tmp", "/var/folders")
 
 
-def _is_scratch(path: str) -> bool:
-    return any(path == p or path.startswith(p + "/") for p in _SCRATCH_PREFIXES)
-
-
-def _consume_quoted_paths(cmd: str, tc, root, is_write: bool, evidence: str,
+def _consume_quoted_paths(cmd: str, tc, root, home, is_write: bool, evidence: str,
                            findings: list, seen: set) -> str:
     def repl(m):
         inner = m.group(1) if m.group(1) is not None else m.group(2)
         if inner and (inner.startswith("/") or inner.startswith("~")):
-            f = _check_path(inner, tc.cwd, root, is_write=is_write, evidence=evidence,
+            f = _check_path(inner, tc.cwd, root, home, is_write=is_write, evidence=evidence,
                              event_index=tc.index, tool_name=tc.tool_name, seen=seen)
             if f:
                 findings.append(f)
@@ -144,14 +144,14 @@ def _consume_quoted_paths(cmd: str, tc, root, is_write: bool, evidence: str,
     return _QUOTED_RE.sub(repl, cmd)
 
 
-def _check_path(raw: str, cwd: str, root, *, is_write: bool, evidence: str,
+def _check_path(raw: str, cwd: str, root, home, *, is_write: bool, evidence: str,
                  event_index: int, tool_name: str, seen: set):
-    norm = _normalize(raw, cwd)
+    norm = normalize_path(raw, cwd, home)
     if norm is None:
         return None
     if norm in _DEV_NOISE:
         return None
-    if root and _is_under(norm, root):
+    if root and is_under(norm, root):
         return None
     key = (event_index, norm)
     if key in seen:
@@ -159,7 +159,7 @@ def _check_path(raw: str, cwd: str, root, *, is_write: bool, evidence: str,
     seen.add(key)
 
     sensitive = _is_sensitive(norm)
-    if is_write and _is_scratch(norm):
+    if is_write and is_scratch_path(norm):
         sev = Severity.LOW
         title = "Write reaches the OS scratch directory"
     elif is_write:
@@ -174,44 +174,23 @@ def _check_path(raw: str, cwd: str, root, *, is_write: bool, evidence: str,
 
     root_desc = root or "unknown, no cwd observed in this transcript"
     verb = "Wrote to" if is_write else "Read"
-    detail = f"{verb} {norm}, outside the session's project root ({root_desc})."
+    detail = f"{verb} {_display(norm)}, outside the session's project root ({root_desc})."
     return mk(RULE_ID, Category.FILESYSTEM, sev, title, detail, evidence, event_index, tool_name,
               "Scope file access to the project directory; treat anything outside it as a "
               "deliberate, reviewed exception.")
 
 
-# Transcript paths are the analyzed machine's, which is POSIX in practice; `~`
-# refers to that machine's home, which we do not know, so expand it to a stable
-# absolute stand-in. Detection only needs it to land outside the project root and
-# keep any sensitive suffix (/.ssh and friends) intact, which this does.
-_HOME = os.environ.get("HOME") or "/root"
-if not _HOME.startswith("/"):
-    _HOME = "/root"
-
-
-def _normalize(raw: str, cwd: str):
-    if not raw:
-        return None
-    try:
-        p = raw
-        if p == "~":
-            p = _HOME
-        elif p.startswith("~/"):
-            p = _HOME + p[1:]
-        if not p.startswith("/"):
-            if not cwd:
-                return None
-            p = posixpath.join(cwd, p)
-        return posixpath.normpath(p)
-    except (TypeError, ValueError):
-        return None
-
-
-def _is_under(path: str, root: str) -> bool:
-    return path == root or path.startswith(root + "/")
+def _display(path: str) -> str:
+    """The sentinel home stands in for "this transcript never said where home
+    was". Printing it raw is confusing, so put the tilde back and say why."""
+    if path == NO_HOME or path.startswith(NO_HOME + "/"):
+        return "~" + path[len(NO_HOME):] + " (this transcript never recorded a home directory)"
+    return path
 
 
 def _is_sensitive(path: str) -> bool:
-    if any(path.startswith(a) for a in _SENSITIVE_ABS):
+    # Whole path components only: a plain startswith("/etc") also matches
+    # /etcetera, and /rootkit is not /root.
+    if any(is_under(path, a) for a in _SENSITIVE_ABS):
         return True
     return any(s in path for s in _SENSITIVE_SUFFIXES)
