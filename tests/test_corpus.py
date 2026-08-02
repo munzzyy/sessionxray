@@ -11,6 +11,7 @@ rest of the corpus is held to.
 """
 
 import unittest
+from collections import Counter
 from pathlib import Path
 
 from sessionxray.finding import Severity
@@ -47,6 +48,27 @@ class BenignPrecision(unittest.TestCase):
                 loud = [f for f in r.findings if f.severity >= Severity.HIGH]
                 self.assertEqual(loud, [], f"{path.name}: false positives {[f.title for f in loud]}")
                 self.assertIn(r.grade, ("A", "B"), f"{path.name}: grade {r.grade}, unexpected penalty")
+
+    def test_the_benign_corpus_is_broad_enough_to_mean_something(self):
+        # A precision floor asserted over two files is not a floor. Every false
+        # positive class fixed so far has a fixture here; keep the count from
+        # sliding back.
+        paths = sorted((CORPUS / "benign").glob("*.jsonl"))
+        self.assertGreaterEqual(len(paths), 15, "the benign corpus has shrunk")
+
+    def test_benign_precision_as_a_number(self):
+        # A single boolean hides how close the corpus is to tripping. Track the
+        # aggregate so a regression shows up as a number moving, not just a
+        # pass/fail flip on whichever fixture happens to break first.
+        paths = sorted((CORPUS / "benign").glob("*.jsonl"))
+        results = [scan_session(p) for p in paths]
+        grades = Counter(r.grade for r in results)
+        mediums = sum(r.counts()[Severity.MEDIUM] for r in results)
+        self.assertEqual(grades["F"] + grades["D"] + grades["C"], 0, dict(grades))
+        # Mostly A, a few B for wide research sessions. Well under one MEDIUM
+        # per fixture on average.
+        self.assertGreaterEqual(grades["A"], len(paths) - 3, dict(grades))
+        self.assertLessEqual(mediums, len(paths) * 2, mediums)
 
 
 class MalformedRobustness(unittest.TestCase):
