@@ -2,16 +2,24 @@
 
 Unlike a static skill scanner looking at example code, everything here came
 from a Bash tool call the agent executed. That is a stronger signal than a
-pattern match in a document, which is why every hit in this rule is HIGH.
+pattern match in a document, which is why the named destructive commands here
+are all HIGH.
+
+The one exception is a bare `>` redirect. Overwriting a file is worth noticing
+but it is also how an agent writes any file at all, so it is graded by where
+the target lands: silent for scratch space, LOW inside the project the session
+was working in, MEDIUM for anything else.
 """
 
 from __future__ import annotations
 
+import posixpath
 import re
 
-from ..discovery import ParsedSession
+from ..discovery import NO_HOME, ParsedSession
 from ..finding import Category, Severity
-from ._util import bash_command, classify_tool, mask_quoted, mcp_command_text, mk
+from ._util import (bash_command, classify_tool, is_scratch_path, is_under, mask_quoted,
+                     mcp_command_text, mk, normalize_path, split_bash_segments)
 
 RULE_ID = "SXR-002"
 _I = re.IGNORECASE
@@ -21,9 +29,6 @@ _PATTERNS = [
                 r"(?:\s/(?:\s|$|['\"])|\s~(?:/|\s|$)|\$HOME|\s/\*|--no-preserve-root)", _I),
      "Destructive recursive delete",
      "A recursive force-delete aimed at a home directory, filesystem root, or a broad glob."),
-    (re.compile(r"\bmkfs(?:\.\w+)?\b", _I),
-     "Filesystem format command",
-     "mkfs rebuilds a filesystem in place, destroying whatever was on it."),
     # of=/dev/sda on POSIX, or the Windows raw-device path of=\\.\PhysicalDrive0.
     # The old Windows branch required a literal doubled-backslash device path
     # (`X:\\.\\`) that no real command ever produces, so it never fired.
@@ -57,10 +62,20 @@ _CLOBBER_RE = re.compile(r"(?<!>)>(?!>)\s*([^\s|&;<>]+)")
 # after a stray '>' inside HTML or prose) does not count.
 _SAFE_TARGET_RE = re.compile(r"^(?:[\w.\-]*/)+[\w.\-]+$|^[\w\-]+\.[A-Za-z0-9]{1,10}$|^[~][\w./\-]*$")
 
+# mkfs only formats anything when it is the command being run. Bare-word
+# matching flagged `which mkfs.btrfs`, `man mkfs.ext4` and a symlink named
+# mkfs.btrfs as filesystem formats.
+_MKFS_CMD_RE = re.compile(r"^\s*(?:sudo\s+(?:-\S+\s+)*)?(?:[\w.\-]*/)*mkfs(?:\.\w+)?\b(.*)$", _I)
+_MKFS_NO_OP_ARGS_RE = re.compile(r"^(?:\s*(?:--help|-h|--version|-V|--usage))*\s*$", _I)
+_CD_RE = re.compile(r"^\s*cd\s+(?:--\s+)?([^\s;&|<>'\"]+)\s*$")
+
 
 def check(session: ParsedSession) -> list:
     findings: list = []
     seen: set = set()
+    root = posixpath.normpath(session.project_root) if session.project_root else None
+    home = session.home or NO_HOME
+
     for tc in session.tool_calls:
         kind = classify_tool(tc.tool_name)
         if kind == "bash":
@@ -71,37 +86,75 @@ def check(session: ParsedSession) -> list:
             continue
         if not cmd:
             continue
-        for rx, title, detail in _PATTERNS:
-            for m in rx.finditer(cmd):
-                key = (tc.index, title)
-                if key in seen:
-                    continue
-                seen.add(key)
-                findings.append(mk(
-                    RULE_ID, Category.DESTRUCTIVE, Severity.HIGH, title, detail,
-                    cmd, tc.index, tc.tool_name,
-                    "Confirm this was intentional. Scope destructive commands as narrowly as "
-                    "possible and prefer a reversible alternative when one exists.",
-                ))
-        # Quotes are masked only for this specific check: a lone '>' is common
-        # incidental noise inside a quoted grep/sed pattern, unlike the more
-        # specific multi-word patterns above which don't false-positive that way.
-        for m in _CLOBBER_RE.finditer(mask_quoted(cmd)):
-            target = m.group(1)
-            if _is_scratch_target(target) or not _SAFE_TARGET_RE.match(target):
-                continue
-            key = (tc.index, "clobber", target)
+
+        def add(key, sev, title, detail, remediation):
             if key in seen:
-                continue
+                return
             seen.add(key)
-            findings.append(mk(
-                RULE_ID, Category.DESTRUCTIVE, Severity.HIGH,
-                "Single-arrow redirect overwrites a file",
-                f"'>' truncates {target!r} and replaces it in one step; whatever was there before is gone.",
-                cmd, tc.index, tc.tool_name,
-                "Use >> to append, write to a new file and diff it, or confirm the target is disposable.",
-            ))
+            findings.append(mk(RULE_ID, Category.DESTRUCTIVE, sev, title, detail,
+                                cmd, tc.index, tc.tool_name, remediation))
+
+        for rx, title, detail in _PATTERNS:
+            if rx.search(cmd):
+                add((tc.index, title), Severity.HIGH, title, detail,
+                    "Confirm this was intentional. Scope destructive commands as narrowly as "
+                    "possible and prefer a reversible alternative when one exists.")
+
+        # Walk the sub-commands in order so a leading `cd` sets the directory
+        # the redirect targets after it actually resolve against. A huge share
+        # of real hits are `cd /tmp/scratch && cat > notes.md`, where the target
+        # is throwaway and only looks bare because the cd is in another segment.
+        base = tc.cwd
+        for segment in split_bash_segments(cmd):
+            # Quotes are masked only for these checks: a lone '>' is common
+            # incidental noise inside a quoted grep/sed pattern, unlike the more
+            # specific multi-word patterns above which don't false-positive that way.
+            masked = mask_quoted(segment)
+            cd = _CD_RE.match(segment)
+            if cd:
+                moved = normalize_path(cd.group(1), base, home)
+                if moved:
+                    base = moved
+                continue
+            if _is_mkfs_command(masked):
+                add((tc.index, "Filesystem format command"), Severity.HIGH,
+                    "Filesystem format command",
+                    "mkfs rebuilds a filesystem in place, destroying whatever was on it.",
+                    "Confirm this was intentional. Scope destructive commands as narrowly as "
+                    "possible and prefer a reversible alternative when one exists.")
+            for m in _CLOBBER_RE.finditer(masked):
+                target = m.group(1)
+                if not _SAFE_TARGET_RE.match(target) or _is_scratch_target(target):
+                    continue
+                resolved = normalize_path(target, base, home)
+                if resolved and is_scratch_path(resolved):
+                    continue
+                where = resolved or target
+                if resolved and root and is_under(resolved, root):
+                    add((tc.index, "clobber", where), Severity.LOW,
+                        "Redirect overwrites a file inside the project",
+                        f"'>' truncates {where!r} and replaces it in one step. The target is inside "
+                        "the project root, so this is ordinary work rather than reach, but whatever "
+                        "was there before is gone.",
+                        "Use >> to append, or write to a new file and diff it, if the previous "
+                        "contents mattered.")
+                else:
+                    add((tc.index, "clobber", where), Severity.MEDIUM,
+                        "Single-arrow redirect overwrites a file",
+                        f"'>' truncates {where!r} and replaces it in one step; whatever was there "
+                        "before is gone, and the target is outside the project this session was "
+                        "working in.",
+                        "Use >> to append, write to a new file and diff it, or confirm the target "
+                        "is disposable.")
     return findings
+
+
+def _is_mkfs_command(segment: str) -> bool:
+    m = _MKFS_CMD_RE.match(segment)
+    if not m:
+        return False
+    # `mkfs.btrfs --help` prints usage and formats nothing.
+    return not _MKFS_NO_OP_ARGS_RE.match(m.group(1))
 
 
 def _is_scratch_target(target: str) -> bool:

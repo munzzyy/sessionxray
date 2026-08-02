@@ -672,5 +672,43 @@ class HomeInference(unittest.TestCase):
         self.assertEqual(len(outputs), 1, outputs)
 
 
+class MkfsPrecision(unittest.TestCase):
+    def test_looking_mkfs_up_is_not_a_format(self):
+        for cmd in ("which mkfs.btrfs", "man mkfs.ext4", "mkfs.btrfs --help",
+                    "ln -sf /opt/bin/mkfs.btrfs /home/testuser/bin/mkfs.btrfs"):
+            r = one_call("Bash", {"command": cmd})
+            fmt = [f for f in by_cat(r, Category.DESTRUCTIVE) if "format" in f.title.lower()]
+            self.assertEqual(fmt, [], cmd)
+
+    def test_mkfs_on_a_device_is_still_high(self):
+        r = one_call("Bash", {"command": "sudo mkfs.ext4 /dev/sdb1"})
+        fmt = [f for f in by_cat(r, Category.DESTRUCTIVE) if "format" in f.title.lower()]
+        self.assertTrue(fmt and fmt[0].severity == Severity.HIGH, fmt)
+
+
+class ClobberGrading(unittest.TestCase):
+    def test_redirect_inside_the_project_is_low(self):
+        r = one_call("Bash", {"command": f"git diff > {DEFAULT_ROOT}/patch.diff"})
+        d = [f for f in by_cat(r, Category.DESTRUCTIVE) if "redirect" in f.title.lower()]
+        self.assertTrue(d, titles(r))
+        self.assertEqual(d[0].severity, Severity.LOW, d)
+
+    def test_relative_redirect_resolves_against_the_cwd(self):
+        r = one_call("Bash", {"command": "python3 build.py > build.json"})
+        d = [f for f in by_cat(r, Category.DESTRUCTIVE) if "redirect" in f.title.lower()]
+        self.assertTrue(d and d[0].severity == Severity.LOW, d)
+
+    def test_redirect_outside_the_project_is_medium(self):
+        r = one_call("Bash", {"command": "python3 build.py > /opt/shared/build.json"})
+        d = [f for f in by_cat(r, Category.DESTRUCTIVE) if "redirect" in f.title.lower()]
+        self.assertTrue(d, titles(r))
+        self.assertEqual(d[0].severity, Severity.MEDIUM, d)
+
+    def test_leading_cd_moves_the_target_into_scratch(self):
+        r = one_call("Bash", {"command": "cd /tmp/scratch-run && cat > plan.md << 'EOF'\nhi\nEOF"})
+        d = [f for f in by_cat(r, Category.DESTRUCTIVE) if "redirect" in f.title.lower()]
+        self.assertEqual(d, [], d)
+
+
 if __name__ == "__main__":
     unittest.main()
