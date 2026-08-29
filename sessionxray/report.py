@@ -157,6 +157,16 @@ def render_summary(results: list, color: bool = True, sort: str = "severity",
     return "\n".join(lines)
 
 
+def render_watch_line(path: str, finding, color: bool = True) -> str:
+    """One line for a finding surfaced by --watch: severity, rule id, title,
+    and where it came from. Mirrors the tag styling _render_one uses so a
+    live feed reads as the same tool as a normal report."""
+    def c(code, s):
+        return f"{code}{s}{_RESET}" if color else s
+    tag = c(_COLOR[finding.severity], finding.severity.label.upper())
+    return f"[{tag}] {finding.rule_id} {finding.title} -- {path} (event #{finding.event_index})"
+
+
 def render_json(results: list) -> str:
     payload = {
         "tool": "sessionxray",

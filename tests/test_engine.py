@@ -252,6 +252,92 @@ class CLI(unittest.TestCase):
         self.assertEqual(code, 2)
 
 
+class SelectIgnore(unittest.TestCase):
+    def _run(self, argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = cli.main(argv)
+        return code, out.getvalue()
+
+    def _rule_ids(self, argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.main(argv)
+        return {f["rule_id"] for f in json.loads(out.getvalue())["sessions"][0]["findings"]}
+
+    def test_select_keeps_only_the_named_rule(self):
+        argv = [str(FIXTURES / "malicious" / "secrets.jsonl"), "--json", "--fail-on", "none",
+                "--select", "SXR-004"]
+        self.assertEqual(self._rule_ids(argv), {"SXR-004"})
+
+    def test_ignore_drops_the_named_rule(self):
+        argv = [str(FIXTURES / "malicious" / "secrets.jsonl"), "--json", "--fail-on", "none",
+                "--ignore", "SXR-003"]
+        rules = self._rule_ids(argv)
+        self.assertNotIn("SXR-003", rules)
+        self.assertTrue(rules)
+
+    def test_select_accepts_a_comma_list(self):
+        argv = [str(FIXTURES / "malicious" / "secrets.jsonl"), "--json", "--fail-on", "none",
+                "--select", "SXR-003,SXR-004"]
+        self.assertEqual(self._rule_ids(argv), {"SXR-003", "SXR-004"})
+
+    def test_ignored_rule_cannot_trip_fail_on(self):
+        # Ignoring every rule the fixture trips should pass, not just print
+        # quieter -- filtering happens before grading.
+        code, _ = self._run([str(FIXTURES / "malicious" / "destructive.jsonl"), "--no-color",
+                             "--fail-on", "high", "--ignore", "SXR-001,SXR-002"])
+        self.assertEqual(code, 0)
+
+    def test_unknown_select_rule_is_a_usage_error(self):
+        code, out = self._run([str(FIXTURES / "malicious" / "secrets.jsonl"),
+                               "--select", "SXR-999"])
+        self.assertEqual(code, 2)
+
+    def test_unknown_ignore_rule_is_a_usage_error(self):
+        code, out = self._run([str(FIXTURES / "malicious" / "secrets.jsonl"),
+                               "--ignore", "not-a-rule"])
+        self.assertEqual(code, 2)
+
+
+class GateTrip(unittest.TestCase):
+    def _run_capture_stderr(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_json_run_that_trips_fail_on_names_the_culprit_on_stderr(self):
+        code, out, err = self._run_capture_stderr(
+            [str(FIXTURES / "malicious" / "secrets.jsonl"), "--json", "--fail-on", "high"])
+        self.assertEqual(code, 1)
+        self.assertIn(str(FIXTURES / "malicious" / "secrets.jsonl"), err)
+        self.assertIn("SXR-003", err)
+        # Never inside the JSON document itself.
+        json.loads(out)
+
+    def test_summary_run_that_trips_fail_on_names_the_culprit_on_stderr(self):
+        code, out, err = self._run_capture_stderr(
+            [str(FIXTURES / "malicious" / "secrets.jsonl"), "--summary", "--no-color",
+             "--fail-on", "high"])
+        self.assertEqual(code, 1)
+        self.assertIn("SXR-003", err)
+
+    def test_clean_run_prints_nothing_to_stderr(self):
+        code, out, err = self._run_capture_stderr(
+            [str(FIXTURES / "benign" / "benign-session.jsonl"), "--json", "--fail-on", "high"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+
+    def test_human_report_run_does_not_duplicate_the_message(self):
+        # The plain human report already shows every finding inline -- the
+        # gate-trip pointer is only for the opaque --json/--summary outputs.
+        code, out, err = self._run_capture_stderr(
+            [str(FIXTURES / "malicious" / "secrets.jsonl"), "--no-color", "--fail-on", "high"])
+        self.assertEqual(code, 1)
+        self.assertEqual(err, "")
+
+
 class Tail(unittest.TestCase):
     """`--tail` reads the SessionEnd hook's history log back, newest first.
     Every test points SESSIONXRAY_HISTORY_LOG at a throwaway file so this

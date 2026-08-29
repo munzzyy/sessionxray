@@ -12,8 +12,10 @@ from pathlib import Path
 from . import __version__
 from .discovery import _to_posix_path, discover_sessions
 from .finding import Severity
-from .report import parse_grade, render_human, render_json, render_summary
+from .report import parse_grade, render_human, render_json, render_summary, render_watch_line
+from .rules import ALL_RULE_IDS
 from .scanner import scan_session
+from .watch import run_watch
 
 # Where the SessionEnd hook (hooks/sessionxray-sessionend.sh) appends its
 # one-line-per-session log. Overridable so tests, and anyone with an unusual
@@ -44,6 +46,11 @@ def build_parser() -> argparse.ArgumentParser:
     out.add_argument("--tail", action="store_true",
                       help="print the SessionEnd hook's history log, newest first, and exit "
                            "(see hooks/sessionxray-sessionend.sh)")
+    out.add_argument("--watch", nargs="?", const=str(Path.home() / ".claude" / "projects"),
+                      metavar="DIR",
+                      help="poll DIR (default ~/.claude/projects) for new or changed session "
+                           "files and print only findings new since the last poll, until "
+                           "interrupted -- a live guardrail instead of an after-the-fact read")
     p.add_argument("--tail-limit", type=int, default=0, metavar="N",
                    help="with --tail, show only the N most recent entries (default: all)")
     p.add_argument("--sort", choices=("severity", "path"), default="severity",
@@ -55,10 +62,30 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fail-on", default="high", metavar="SEVERITY",
                    help="exit non-zero if any finding is at or above this severity "
                         "(critical|high|medium|low|info|none; default: high)")
+    p.add_argument("--select", metavar="RULE[,RULE...]",
+                   help="only report findings from these rule IDs, e.g. SXR-003,SXR-004")
+    p.add_argument("--ignore", metavar="RULE[,RULE...]",
+                   help="never report findings from these rule IDs, e.g. SXR-004")
     p.add_argument("--out", metavar="PATH", help="write the report to this file instead of stdout")
     p.add_argument("--no-color", action="store_true", help="disable ANSI color")
+    p.add_argument("--watch-interval", type=float, default=2.0, metavar="SECONDS",
+                   help="with --watch, seconds between polls (default: 2.0)")
+    p.add_argument("--watch-max-cycles", type=int, default=None, metavar="N",
+                   help="with --watch, stop after N polls instead of running forever "
+                        "(mainly for scripting)")
     p.add_argument("--version", action="version", version=f"sessionxray {__version__}")
     return p
+
+
+def _parse_rule_list(value: str, flag: str):
+    """Split a --select/--ignore value on commas into a frozenset of rule
+    IDs, rejecting anything that isn't a rule this build knows about -- a
+    typo'd rule ID would otherwise silently match nothing instead of erroring."""
+    ids = frozenset(v.strip().upper() for v in value.split(",") if v.strip())
+    unknown = sorted(ids - ALL_RULE_IDS)
+    if unknown:
+        raise ValueError(f"{flag} names unknown rule ID(s): {', '.join(unknown)}")
+    return ids
 
 
 def _fail_threshold(value: str):
@@ -120,15 +147,69 @@ def _cmd_tail(limit: int) -> int:
     return 0
 
 
+def _cmd_watch(directory: str, interval: float, max_cycles, project_root, select, ignore, color: bool) -> int:
+    print(f"sessionxray: watching {directory} (every {interval:g}s, ctrl-c to stop)")
+
+    def _report(path, finding) -> None:
+        print(render_watch_line(path, finding, color=color))
+
+    try:
+        run_watch(directory, interval=interval, max_cycles=max_cycles,
+                  project_root_override=project_root, select=select, ignore=ignore,
+                  on_findings=_report)
+    except KeyboardInterrupt:
+        print()
+        print("sessionxray: stopped watching")
+    return 0
+
+
+def _print_gate_trip(results: list, threshold) -> None:
+    """Name the session(s) and worst finding that tripped --fail-on, so a
+    --json or --summary run failing in CI points at what to fix instead of
+    just exiting 1 with no pointer. Goes to stderr so it never lands inside
+    the --json document or the summary text printed on stdout."""
+    for r in results:
+        worst = r.worst()
+        if worst is None or worst < threshold:
+            continue
+        finding = next(f for f in r.findings if f.severity == worst)
+        print(f"sessionxray: {r.path} tripped --fail-on {threshold.label} "
+              f"({finding.rule_id} {finding.title!r}, severity {worst.label})", file=sys.stderr)
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
 
     if args.tail:
         return _cmd_tail(args.tail_limit)
 
+    try:
+        select = _parse_rule_list(args.select, "--select") if args.select else None
+        ignore = _parse_rule_list(args.ignore, "--ignore") if args.ignore else None
+    except ValueError as e:
+        print(f"sessionxray: {e}", file=sys.stderr)
+        return 2
+
+    if args.watch is not None:
+        if args.targets:
+            print("sessionxray: pass either targets or --watch, not both", file=sys.stderr)
+            return 2
+        project_root = args.project_root
+        if project_root is not None:
+            try:
+                project_root = _validate_project_root(project_root)
+            except ValueError:
+                print("sessionxray: --project-root must be an absolute path as it appears in "
+                      f"the transcript, e.g. /home/me/widget-app (got {args.project_root!r})",
+                      file=sys.stderr)
+                return 2
+        color = not args.no_color and sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+        return _cmd_watch(args.watch, args.watch_interval, args.watch_max_cycles,
+                           project_root, select, ignore, color)
+
     if not args.targets:
-        print("sessionxray: no targets given (or use --tail to read the session-end hook's log)",
-              file=sys.stderr)
+        print("sessionxray: no targets given (or use --tail to read the session-end hook's log, "
+              "or --watch to tail a directory live)", file=sys.stderr)
         return 2
 
     try:
@@ -170,7 +251,7 @@ def main(argv=None) -> int:
         return 2
 
     try:
-        results = [scan_session(p, project_root) for p in paths]
+        results = [scan_session(p, project_root, select=select, ignore=ignore) for p in paths]
     except OSError as e:
         print(f"sessionxray: {e}", file=sys.stderr)
         return 2
@@ -196,6 +277,8 @@ def main(argv=None) -> int:
     if threshold is not None:
         worst = max((r.worst() for r in results if r.worst() is not None), default=None)
         if worst is not None and worst >= threshold:
+            if args.json or args.summary:
+                _print_gate_trip(results, threshold)
             return 1
     return 0
 

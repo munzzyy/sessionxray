@@ -117,7 +117,33 @@ $ sessionxray --summary tests/fixtures/malicious --fail-on none
 sessionxray "$CLAUDE_TRANSCRIPT" --fail-on high
 ```
 
-`--fail-on` takes `critical`, `high`, `medium`, `low`, `info`, or `none` (default `high`) and applies across every session scanned in one run.
+`--fail-on` takes `critical`, `high`, `medium`, `low`, `info`, or `none` (default `high`) and applies across every session scanned in one run. Failing on `--json` or `--summary` also names the culprit on stderr, so a CI log doesn't just say "exit 1" with nothing to click through to:
+
+```
+sessionxray: .../malicious/secrets.jsonl tripped --fail-on high (SXR-003 'Reads a credential and can send it out', severity critical)
+```
+
+### Silencing a rule
+
+`--select` and `--ignore` filter findings by rule ID before grading, so a rule that's a false positive for your workflow (SXR-004 firing on an API call the agent is supposed to make, say) doesn't cost you your grade either, not just your patience:
+
+```bash
+sessionxray "$CLAUDE_TRANSCRIPT" --ignore SXR-004        # never report network egress here
+sessionxray "$CLAUDE_TRANSCRIPT" --select SXR-002,SXR-003  # only care about these two
+```
+
+Both take a comma-separated list of rule IDs; an unrecognized one is a usage error rather than a silent no-op.
+
+### Live, instead of after the fact
+
+`--watch` polls a directory for new or changed session files and prints only the findings new since the last look, so it can sit next to a running fleet of Claude Code sessions instead of waiting for one to end:
+
+```bash
+sessionxray --watch                      # polls ~/.claude/projects every 2s until you stop it
+sessionxray --watch /path/to/sessions --watch-interval 5
+```
+
+It's mtime polling, not inotify, so it works anywhere sessionxray already runs. `--select`/`--ignore`/`--project-root` all apply. `--watch-max-cycles N` stops after N polls instead of running forever, mainly useful for a scripted check.
 
 ### A Claude Code hook (automatic, every session)
 
@@ -163,6 +189,8 @@ If `transcript_path` is missing, empty, or doesn't point at a real file, or if `
 - `--project-root PATH` -- override the inferred project root for every session in this run
 - `--min-grade LETTER` -- with `--summary`, print only sessions graded that letter or worse
 - `--sort path` -- with `--summary`, order rows by file path instead of worst-first
+- `--select RULE[,RULE...]` / `--ignore RULE[,RULE...]` -- only report, or never report, findings from these rule IDs (applies before grading, and before `--fail-on`)
+- `--watch [DIR]` -- poll DIR (default `~/.claude/projects`) for new or changed sessions and print only findings new since the last poll, until interrupted; `--watch-interval SECONDS` and `--watch-max-cycles N` tune it
 
 ## What it checks
 

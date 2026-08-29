@@ -40,11 +40,26 @@ def _collapse_repeats(findings: list) -> list:
     return collapsed
 
 
-def scan_session(path, project_root_override=None) -> SessionResult:
+def _filter_by_rule(findings: list, select, ignore) -> list:
+    """Keep only what --select/--ignore asked for. `select`, when given, is an
+    allow-list: everything not in it is dropped. `ignore` is then applied on
+    top as a deny-list, so a rule id in both never reports (select wins the
+    inclusion, ignore wins the exclusion). Filtering happens before grading,
+    so a rule someone has decided is a false positive for their workflow
+    doesn't cost them their grade either."""
+    if select:
+        findings = [f for f in findings if f.rule_id in select]
+    if ignore:
+        findings = [f for f in findings if f.rule_id not in ignore]
+    return findings
+
+
+def scan_session(path, project_root_override=None, select=None, ignore=None) -> SessionResult:
     parsed = parse_session(path)
     if project_root_override:
         parsed.project_root = project_root_override
     findings = _collapse_repeats(run_all(parsed))
+    findings = _filter_by_rule(findings, select, ignore)
     findings.sort(key=lambda f: f.sort_key())
     g, score = grade(findings)
     return SessionResult(
@@ -64,6 +79,7 @@ def scan_session(path, project_root_override=None) -> SessionResult:
     )
 
 
-def scan_targets(targets, project_root_override=None) -> list:
+def scan_targets(targets, project_root_override=None, select=None, ignore=None) -> list:
     """Resolve CLI targets to session files and scan each one."""
-    return [scan_session(p, project_root_override) for p in discover_sessions(targets)]
+    return [scan_session(p, project_root_override, select=select, ignore=ignore)
+            for p in discover_sessions(targets)]

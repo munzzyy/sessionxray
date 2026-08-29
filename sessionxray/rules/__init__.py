@@ -25,6 +25,19 @@ ALL_RULES = [
     injection.check,
 ]
 
+# Every rule ID this build knows about, for validating --select/--ignore
+# before a scan runs instead of silently matching nothing on a typo.
+ALL_RULE_IDS = frozenset({
+    integrity.RULE_ID,
+    filesystem.RULE_ID,
+    destructive.RULE_ID,
+    secrets.RULE_ID,
+    network.RULE_ID,
+    remote_code.RULE_ID,
+    persistence.RULE_ID,
+    injection.RULE_ID,
+})
+
 
 def run_all(session) -> list:
     findings = []
