@@ -1,7 +1,7 @@
 # sessionxray
 
 [![CI](https://github.com/munzzyy/sessionxray/actions/workflows/ci.yml/badge.svg)](https://github.com/munzzyy/sessionxray/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
 
 ![sessionxray grading an F on a transcript that follows an injected WebFetch result into a credential leak, a piped-to-shell recovery script, and a new SSH authorized_keys entry](docs/media/demo.svg)
@@ -232,7 +232,7 @@ Found a pattern that should have been flagged and wasn't, or a false positive on
 
 ## License
 
-MIT. Free to use, change, and ship, commercial or not. See [LICENSE](LICENSE).
+[GPL-3.0-or-later](LICENSE). You can use, study, change and share it. If you distribute a copy or a modified version, it has to stay under the GPL and come with its source. Releases up to v0.1.0 were under MIT.
 
 ## Support
 

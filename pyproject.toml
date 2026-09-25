@@ -7,7 +7,7 @@ name = "sessionxray"
 version = "0.1.0"
 description = "Audit a Claude Code session transcript for what the agent actually touched: filesystem reach, destructive commands, credential access, network egress, remote code, persistence, and prompt-injection exposure."
 readme = "README.md"
-license = "MIT"
+license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.9"
 authors = [{ name = "Cole Munz" }]
