@@ -24,8 +24,13 @@ from ._util import (bash_command, classify_tool, is_scratch_path, is_under, mask
 RULE_ID = "SXR-002"
 _I = re.IGNORECASE
 
+# The flags of one rm call, clustered or not: -rf, -r -f, -R -f, --recursive --force.
+_RM_FLAGS = r"(?:\s+-[\w-]+)"
+_RM_RECURSIVE = r"(?=" + _RM_FLAGS + r"*?\s+(?:-[a-z]*r[a-z]*|--recursive)(?![\w-]))"
+_RM_FORCE = r"(?=" + _RM_FLAGS + r"*?\s+(?:-[a-z]*f[a-z]*|--force)(?![\w-]))"
+
 _PATTERNS = [
-    (re.compile(r"\brm\s+-(?=[a-z]*r)(?=[a-z]*f)[a-z]+\b[^\n|;&]*?"
+    (re.compile(r"\brm" + _RM_RECURSIVE + _RM_FORCE + _RM_FLAGS + r"+[^\n|;&]*?"
                 r"(?:\s/(?:\s|$|['\"])|\s~(?:/|\s|$)|\$HOME|\s/\*|--no-preserve-root)", _I),
      "Destructive recursive delete",
      "A recursive force-delete aimed at a home directory, filesystem root, or a broad glob."),
@@ -47,12 +52,15 @@ _PATTERNS = [
     (re.compile(r"\bgit\s+reset\s+--hard\b", _I),
      "git reset --hard",
      "Discards uncommitted work and rewrites the working tree with no recovery path."),
-    (re.compile(r"\bgit\s+push\b[^\n]*(?:--force(?:-with-lease)?\b|(?<!\S)-f\b)", _I),
+    # A refspec with a leading + (`git push origin +main`) forces that ref.
+    (re.compile(r"\bgit\s+push\b[^\n]*(?:--force(?:-with-lease)?\b|(?<!\S)-f\b)|"
+                r"\bgit\s+push\b[^\n;&|]*\s\+[\w./:-]", _I),
      "Force push",
      "Force-pushing rewrites remote history; anything only reachable from the old tip is gone for other clones."),
-    (re.compile(r"\bchmod\s+(?:-[a-zA-Z]+\s+)*777\b"),
+    (re.compile(r"\bchmod\s+(?:-[a-zA-Z]+\s+)*(?:\S*,)?(?:0?777\b|[ugo]*[ao][ugoa]*[+=][rwxXst]*w)"),
      "World-writable permissions",
-     "chmod 777 makes a file or directory writable by anyone on the machine."),
+     "chmod 777 (or a symbolic mode like a+rwx or o+w) makes a file or directory writable by "
+     "anyone on the machine."),
 ]
 
 _SCRATCH_SUFFIXES = (".log", ".out", ".tmp", ".bak", ".cache")

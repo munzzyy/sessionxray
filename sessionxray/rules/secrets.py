@@ -33,6 +33,10 @@ _I = re.IGNORECASE
 _SENSITIVE_PATH_RE = re.compile(
     r"(?:"
     r"/\.ssh(?![\w.\-])|~/\.ssh\b|\bid_rsa\b|\bid_ed25519\b|"
+    # Plaintext token stores, only in a home dir: a project's own .npmrc is
+    # usually just a registry setting.
+    r"(?:~|\$\{?HOME\}?|/home/[^/\s'\"]+|/Users/[^/\s'\"]+|/root)/"
+    r"(?:\.git-credentials|\.npmrc|\.pypirc|\.azure/(?:msal_token_cache|accessTokens)\.json)\b|"
     r"/\.aws/credentials\b|"
     r"/\.config/gcloud\b|/\.netrc\b|\.netrc\b|"
     r"/\.docker/config\.json\b|/\.kube/config\b|"
