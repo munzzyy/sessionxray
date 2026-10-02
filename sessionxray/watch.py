@@ -2,9 +2,8 @@
 surface only what changed since the last look.
 
 sessionxray otherwise only reads what is already on disk when it is invoked --
-a forensic, after-the-fact tool. This is the same shape as COLE-OS's own
-inbox-watch loop, applied to session transcripts: no inotify dependency,
-just mtime polling, so it runs anywhere sessionxray already runs.
+a forensic, after-the-fact tool. This polls instead of using inotify, so it
+runs anywhere sessionxray already runs.
 """
 
 from __future__ import annotations
@@ -23,8 +22,8 @@ class WatchState:
     in every file under the watched directory -- there is no earlier baseline
     to diff against yet."""
 
-    mtimes: dict = field(default_factory=dict)  # str(path) -> mtime last scanned at
-    seen: set = field(default_factory=set)  # (path, rule_id, event_index) already reported
+    stamps: dict = field(default_factory=dict)  # str(path) -> (st_mtime_ns, st_size) last scanned at
+    seen: set = field(default_factory=set)  # (path, rule_id, event_index, title, evidence) already reported
 
 
 def _list_jsonl(directory) -> list:
@@ -37,11 +36,12 @@ def _list_jsonl(directory) -> list:
 
 
 def poll(directory, state: WatchState, project_root_override=None, select=None, ignore=None) -> list:
-    """Rescan every .jsonl file under `directory` whose mtime has advanced
-    since the last call, and return the findings new since the last time each
-    file was scanned. Deduped by (path, rule_id, event_index), so a file
-    rescanned because a later line was appended doesn't re-report findings
-    already reported from its earlier lines.
+    """Rescan every .jsonl file under `directory` whose mtime or size has
+    changed since the last call, and return the findings new since the last
+    time each file was scanned. Deduped by (path, rule_id, event_index, title,
+    evidence), so a file rescanned because a later line was appended doesn't
+    re-report findings already reported from its earlier lines, and two
+    findings one event raised under the same rule both get reported.
 
     A missing directory is not an error -- it just means nothing to report
     yet, which matters the first time this points at a fresh ~/.claude/projects
@@ -54,12 +54,14 @@ def poll(directory, state: WatchState, project_root_override=None, select=None, 
 
     for path in _list_jsonl(directory):
         try:
-            mtime = os.path.getmtime(path)
+            st = os.stat(path)
         except OSError:
             continue
-        if mtime <= state.mtimes.get(path, -1.0):
+        # An append inside the mtime granularity leaves mtime unchanged; size catches it.
+        stamp = (st.st_mtime_ns, st.st_size)
+        if state.stamps.get(path) == stamp:
             continue
-        state.mtimes[path] = mtime
+        state.stamps[path] = stamp
 
         try:
             result = scan_session(path, project_root_override, select=select, ignore=ignore)
@@ -67,7 +69,7 @@ def poll(directory, state: WatchState, project_root_override=None, select=None, 
             continue
 
         for f in result.findings:
-            key = (path, f.rule_id, f.event_index)
+            key = (path, f.rule_id, f.event_index, f.title, f.evidence)
             if key in state.seen:
                 continue
             state.seen.add(key)

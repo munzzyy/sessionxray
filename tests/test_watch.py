@@ -12,7 +12,9 @@ import unittest
 from pathlib import Path
 
 from sessionxray import cli
+from sessionxray.scanner import scan_session
 from sessionxray.watch import WatchState, poll, run_watch
+from tests._helpers import assistant_event, write_session
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -71,6 +73,30 @@ class Poll(unittest.TestCase):
         first_keys = {(p, f.rule_id, f.event_index) for p, f in first}
         second_keys = {(p, f.rule_id, f.event_index) for p, f in second}
         self.assertTrue(second_keys.isdisjoint(first_keys))
+
+    def test_an_append_that_keeps_the_same_mtime_is_still_seen(self):
+        # Windows CI hit this: the append landed inside the mtime granularity.
+        self._copy("destructive.jsonl")
+        path = os.path.join(self.dir, "a.jsonl")
+        state = WatchState()
+        self.assertTrue(poll(self.dir, state))
+        prev = os.stat(path).st_mtime_ns
+        with open(FIXTURES / "malicious" / "secrets.jsonl", encoding="utf-8") as fh:
+            extra_line = fh.readline()
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(extra_line)
+        os.utime(path, ns=(prev, prev))
+        self.assertTrue(poll(self.dir, state))
+
+    def test_findings_sharing_a_rule_and_event_are_all_reported(self):
+        cmd = "cp /etc/hosts /srv/www/hosts && cat ~/.ssh/config; echo $GITHUB_TOKEN"
+        src = write_session([assistant_event(0, "Bash", {"command": cmd})])
+        self.addCleanup(shutil.rmtree, src.parent, ignore_errors=True)
+        path = os.path.join(self.dir, "a.jsonl")
+        shutil.copy(src, path)
+        expected = scan_session(path).findings
+        self.assertEqual(len(expected), 4)
+        self.assertEqual(len(poll(self.dir, WatchState())), len(expected))
 
     def test_select_and_ignore_are_honored(self):
         self._copy("secrets.jsonl")
