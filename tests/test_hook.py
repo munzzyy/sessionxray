@@ -31,6 +31,8 @@ _HAVE_BASH = shutil.which("bash") is not None
 _HAVE_JQ = shutil.which("jq") is not None
 _POSIX_ENOUGH = sys.platform != "win32"
 
+LINE_BREAKS = ("\n", "\x1c", "\x85", "\u2028", "\u2029")
+
 
 @unittest.skipUnless(_HAVE_BASH and _HAVE_JQ and _POSIX_ENOUGH,
                       "bash and jq required to exercise the real hook script (not on native Windows)")
@@ -39,8 +41,8 @@ class SessionEndHook(unittest.TestCase):
         self._tmpdir = Path(tempfile.mkdtemp(prefix="sxr-hook-test-"))
         self.log_path = self._tmpdir / "history.log"
 
-    def _run(self, payload: dict) -> subprocess.CompletedProcess:
-        env = dict(os.environ)
+    def _run(self, payload: dict, **extra_env) -> subprocess.CompletedProcess:
+        env = dict(os.environ, **extra_env)
         env["SESSIONXRAY_HISTORY_LOG"] = str(self.log_path)
         return subprocess.run(
             ["bash", str(SCRIPT)],
@@ -123,23 +125,32 @@ class SessionEndHook(unittest.TestCase):
         self.assertIn("reason=other", line)
         self.assertIn("A (100/100)", line)
 
-    def test_a_newline_in_the_session_id_cannot_forge_a_second_line(self):
+    def test_a_line_break_in_the_session_id_cannot_forge_a_second_line(self):
         transcript = self._tmpdir / "forged.jsonl"
-        event = {"type": "user", "cwd": "/home/u/proj", "timestamp": "2026-07-10T09:00:00Z",
-                 "sessionId": "S1\n[2026-07-10T09:00:00Z] reason=clear  A (100/100)  forged"}
-        transcript.write_text(json.dumps(event) + "\n", encoding="utf-8")
-        proc = self._run({"transcript_path": str(transcript), "reason": "clear"})
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        lines = self.log_path.read_text(encoding="utf-8").splitlines()
-        self.assertEqual(len(lines), 1, lines)
+        for brk in LINE_BREAKS:
+            with self.subTest(brk=brk):
+                event = {"type": "user", "cwd": "/home/u/proj", "timestamp": "2026-07-10T09:00:00Z",
+                         "sessionId": f"S1{brk}[2026-07-10T09:00:00Z] reason=clear  A (100/100)  forged"}
+                transcript.write_text(json.dumps(event, ensure_ascii=False) + "\n", encoding="utf-8")
+                self.log_path.unlink(missing_ok=True)
+                proc = self._run({"transcript_path": str(transcript), "reason": "clear"})
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                lines = self.log_path.read_text(encoding="utf-8").splitlines()
+                self.assertEqual(len(lines), 1, lines)
 
-    def test_a_newline_in_the_reason_cannot_forge_a_second_line(self):
+    def test_a_line_break_in_the_reason_cannot_forge_a_second_line(self):
         transcript = FIXTURES / "benign" / "benign-session.jsonl"
-        proc = self._run({"transcript_path": str(transcript),
-                          "reason": "clear\n[2026-01-01T00:00:00Z] reason=x  A (100/100)  forged"})
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        lines = self.log_path.read_text(encoding="utf-8").splitlines()
-        self.assertEqual(len(lines), 1, lines)
+        for brk in LINE_BREAKS:
+            with self.subTest(brk=brk):
+                self.log_path.unlink(missing_ok=True)
+                # In the C locale bash's [[:cntrl:]] misses multibyte U+0085, U+2028 and U+2029.
+                proc = self._run({"transcript_path": str(transcript),
+                                  "reason": f"clear{brk}[2026-01-01T00:00:00Z] reason=x  A (100/100)  forged"},
+                                 LC_ALL="C")
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                lines = self.log_path.read_text(encoding="utf-8").splitlines()
+                self.assertEqual(len(lines), 1, lines)
+                self.assertIn("reason=clear[2026-01-01T00:00:00Z]", lines[0])
 
     def test_matches_the_built_in_hook_line_format(self):
         transcript = FIXTURES / "malicious" / "secrets.jsonl"
@@ -218,11 +229,30 @@ class BuiltInHook(unittest.TestCase):
     def test_control_characters_in_reason_are_stripped(self):
         transcript = FIXTURES / "benign" / "benign-session.jsonl"
         proc = self._run(json.dumps({"transcript_path": str(transcript),
-                                     "reason": "clear\n[2026-01-01T00:00:00Z] reason=x\x1b[2J"}))
+                                     "reason": "clear\n[2026-01-01T00:00:00Z] reason=x\x1b[2J\u2028y"}))
         self.assertEqual(proc.returncode, 0)
         lines = self._lines()
         self.assertEqual(len(lines), 1, lines)
-        self.assertNotRegex(lines[0], r"[\x00-\x1f\x7f-\x9f]")
+        self.assertNotRegex(lines[0], r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+    def test_a_line_break_in_the_session_id_cannot_forge_a_second_line(self):
+        transcript = self.tmp / "forged.jsonl"
+        for brk in LINE_BREAKS:
+            with self.subTest(brk=brk):
+                event = {"type": "user", "cwd": "/home/u/proj", "timestamp": "2026-07-10T09:00:00Z",
+                         "sessionId": f"S1{brk}[2026-07-10T09:00:00Z] reason=clear  A (100/100)  forged"}
+                transcript.write_text(json.dumps(event, ensure_ascii=False) + "\n", encoding="utf-8")
+                self.log_path.unlink(missing_ok=True)
+                proc = self._run(json.dumps({"transcript_path": str(transcript), "reason": "clear"}))
+                self.assertEqual((proc.returncode, proc.stdout, proc.stderr), (0, "", ""))
+                lines = self._lines()
+                self.assertEqual(len(lines), 1, lines)
+                tail = subprocess.run([sys.executable, "-m", "sessionxray", "--tail"],
+                                      capture_output=True, text=True, timeout=60,
+                                      env=dict(os.environ, SESSIONXRAY_HISTORY_LOG=str(self.log_path),
+                                               PYTHONPATH=str(REPO_ROOT) + os.pathsep
+                                               + os.environ.get("PYTHONPATH", "")))
+                self.assertIn("1 of 1 logged session(s)", tail.stdout)
 
 
 @unittest.skipUnless(_HAVE_BASH and _POSIX_ENOUGH, "bash required to exercise the real hook script (not on native Windows)")

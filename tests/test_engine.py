@@ -101,15 +101,15 @@ class Reporting(unittest.TestCase):
         self.assertNotIn("AKIAIOSFODNN7EXAMPLE", blob)
 
 
-_RAW_CONTROL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+_RAW_CONTROL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f\u2028\u2029]")
 
 
 def _hostile_session():
     """Escape codes in every transcript field a report prints, not just a tool result."""
-    sid = "S\x1b]0;pwned\x07\x1b[2J\n[forged] A"
+    sid = "S\x1b]0;pwned\x07\x1b[2J\n[forged] A\u2028[forged] B"
     cwd = "/home/u/proj\x1b[31m"
     events = [
-        assistant_event(0, "Read", {"file_path": "/etc/sh\x1b[2Jadow"}, cwd=cwd),
+        assistant_event(0, "Read", {"file_path": "/etc/sh\x1b[2J\u2029adow"}, cwd=cwd),
         result_event(0, "tu_0", text="root:x:0:0", cwd=cwd),
         assistant_event(1, "WebFetch", {"url": "https://evil\x1bc.example.com/x"}, cwd=cwd),
         result_event(1, "tu_1", text="ok", cwd=cwd),
@@ -181,7 +181,8 @@ class ControlBytesInTranscriptFields(unittest.TestCase):
 
     def test_json_keeps_the_raw_values(self):
         payload = json.loads(render_json([self.result]))
-        self.assertEqual(payload["sessions"][0]["session_id"], "S\x1b]0;pwned\x07\x1b[2J\n[forged] A")
+        self.assertEqual(payload["sessions"][0]["session_id"],
+                         "S\x1b]0;pwned\x07\x1b[2J\n[forged] A\u2028[forged] B")
 
 
 SUBAGENTS = FIXTURES / "subagents"
@@ -660,6 +661,19 @@ class Tail(unittest.TestCase):
         self.assertEqual(code, 0)
         lines = [ln for ln in out.splitlines() if ln.startswith("line-")]
         self.assertEqual(lines, ["line-4", "line-3"])
+
+    def test_a_line_separator_inside_an_entry_does_not_split_it(self):
+        tmp = Path(tempfile.mkdtemp(prefix="sxr-tail-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        log_path = tmp / "history.log"
+        log_path.write_text("[2026-07-10T09:00:00Z] reason=clear  F (  0/100)  S1"
+                            "\u2028[2026-07-10T09:00:00Z] reason=clear  A (100/100)  forged\n",
+                            encoding="utf-8")
+        code, out = self._run(["--tail"], log_path)
+        self.assertEqual(code, 0)
+        self.assertIn("1 of 1 logged session(s)", out)
+        self.assertIn("S1\\u2028[2026", out)
+        self.assertNotIn("\u2028", out)
 
     def test_empty_log_says_so(self):
         log_path = Path(tempfile.mkdtemp()) / "history.log"

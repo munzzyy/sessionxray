@@ -137,7 +137,8 @@ def _cmd_tail(limit: int) -> int:
         print(f"sessionxray: could not read history log: {e}", file=sys.stderr)
         return 2
 
-    all_lines = [ln for ln in text.splitlines() if ln.strip()]
+    # Only "\n" ends an entry; splitlines() would also split one on U+2028 or \x1c.
+    all_lines = [ln for ln in text.split("\n") if ln.strip()]
     if not all_lines:
         print(f"sessionxray: history log at {path} is empty")
         return 0

@@ -35,9 +35,9 @@ command -v jq >/dev/null 2>&1 || exit 0
 transcript_path="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null)"
 [ -n "$transcript_path" ] && [ -f "$transcript_path" ] || exit 0
 
-reason="$(printf '%s' "$input" | jq -r '.reason // empty' 2>/dev/null)"
-# A newline here would write a second, forged log line.
-reason="${reason//[[:cntrl:]]/}"
+# Drops what the built-in hook drops; a line break here would forge a second log line.
+reason="$(printf '%s' "$input" | jq -r '.reason // empty | explode
+    | map(select(. > 31 and (. < 127 or . > 159) and . != 8232 and . != 8233)) | implode' 2>/dev/null)"
 [ -n "$reason" ] || reason="unknown"
 
 # Prefer an installed `sessionxray`. Fall back to running the copy of the

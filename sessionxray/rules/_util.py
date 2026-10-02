@@ -70,16 +70,22 @@ def redact(text: str) -> str:
     return out
 
 
-_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def _escape_char(m) -> str:
+    cp = ord(m.group(0))
+    return f"\\x{cp:02x}" if cp <= 0xFF else f"\\u{cp:04x}"
 
 
 def _escape_controls(text: str) -> str:
     """Replace any C0/C1 control byte -- ESC included -- with a visible \\xNN
-    placeholder. Evidence is often the literal text of a tool result, which is
-    untrusted: without this, a crafted result can plant terminal escape codes
-    that clear the screen or repaint a fake "no findings" line once the report
-    reaches a real terminal."""
-    return _CONTROL_RE.sub(lambda m: f"\\x{ord(m.group(0)):02x}", text)
+    placeholder, and U+2028/U+2029 with \\u2028/\\u2029, since str.splitlines()
+    breaks lines on those too. Evidence is often the literal text of a tool
+    result, which is untrusted: without this, a crafted result can plant
+    terminal escape codes that clear the screen or repaint a fake "no findings"
+    line once the report reaches a real terminal."""
+    return _CONTROL_RE.sub(_escape_char, text)
 
 
 def truncate(text: str, width: int = 160) -> str:
