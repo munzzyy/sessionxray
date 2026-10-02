@@ -55,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     out.add_argument("--watch", nargs="?", const=str(Path.home() / ".claude" / "projects"),
                       metavar="DIR",
                       help="poll DIR (default ~/.claude/projects) for new or changed session "
-                           "files and print only findings new since the last poll, until "
+                           "files and print the findings in what is written from now on, until "
                            "interrupted -- a live guardrail instead of an after-the-fact read")
     p.add_argument("--tail-limit", type=int, default=None, metavar="N",
                    help="with --tail, show only the N most recent entries (default: all)")
@@ -79,6 +79,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--watch-max-cycles", type=int, default=None, metavar="N",
                    help="with --watch, stop after N polls instead of running forever "
                         "(mainly for scripting)")
+    p.add_argument("--watch-replay", action="store_true",
+                   help="with --watch, also report the findings already on disk when it starts "
+                        "(default: only what is written after that)")
     p.add_argument("--version", action="version", version=f"sessionxray {__version__}")
     return p
 
@@ -177,7 +180,8 @@ def _cmd_session_end_hook() -> int:
     return 0
 
 
-def _cmd_watch(directory: str, interval: float, max_cycles, project_root, select, ignore, color: bool) -> int:
+def _cmd_watch(directory: str, interval: float, max_cycles, project_root, select, ignore, color: bool,
+               replay: bool) -> int:
     print(f"sessionxray: watching {directory} (every {interval:g}s, ctrl-c to stop)")
 
     def _report(path, finding) -> None:
@@ -186,7 +190,7 @@ def _cmd_watch(directory: str, interval: float, max_cycles, project_root, select
     try:
         run_watch(directory, interval=interval, max_cycles=max_cycles,
                   project_root_override=project_root, select=select, ignore=ignore,
-                  on_findings=_report)
+                  on_findings=_report, replay=replay)
     except KeyboardInterrupt:
         print()
         print("sessionxray: stopped watching")
@@ -217,8 +221,9 @@ def _misplaced_flag(args):
         return "--sort only applies to --summary"
     if args.min_grade is not None and not args.summary:
         return "--min-grade only applies to --summary"
-    if not watching and (args.watch_interval is not None or args.watch_max_cycles is not None):
-        return "--watch-interval and --watch-max-cycles only apply to --watch"
+    if not watching and (args.watch_interval is not None or args.watch_max_cycles is not None
+                         or args.watch_replay):
+        return "--watch-interval, --watch-max-cycles and --watch-replay only apply to --watch"
     if watching and args.out:
         return "--out does not apply to --watch, which prints findings as it finds them"
     if watching and args.fail_on is not None:
@@ -267,7 +272,7 @@ def main(argv=None) -> int:
         color = not args.no_color and sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
         interval = 2.0 if args.watch_interval is None else args.watch_interval
         return _cmd_watch(args.watch, interval, args.watch_max_cycles,
-                           project_root, select, ignore, color)
+                           project_root, select, ignore, color, args.watch_replay)
 
     if not args.targets:
         print("sessionxray: no targets given (or use --tail to read the session-end hook's log, "

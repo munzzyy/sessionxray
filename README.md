@@ -140,14 +140,14 @@ Both take a comma-separated list of rule IDs; an unrecognized one is a usage err
 
 ### Live, instead of after the fact
 
-`--watch` polls a directory for new or changed session files and prints only the findings new since the last look, so it can sit next to a running fleet of Claude Code sessions instead of waiting for one to end:
+`--watch` polls a directory for new or changed session files and prints the findings in whatever is written after it starts, so it can sit next to a running fleet of Claude Code sessions instead of waiting for one to end:
 
 ```bash
 sessionxray --watch                      # polls ~/.claude/projects every 2s until you stop it
 sessionxray --watch /path/to/sessions --watch-interval 5
 ```
 
-It's mtime polling, not inotify, so it works anywhere sessionxray already runs. `--select`/`--ignore`/`--project-root` all apply. `--watch-max-cycles N` stops after N polls instead of running forever, mainly useful for a scripted check.
+It's mtime polling, not inotify, so it works anywhere sessionxray already runs. When it starts it notes how far each existing file goes without scanning it, so it is ready at once even on a big `~/.claude/projects`, and an old finding never shows up in the feed. `--watch-replay` reports everything already on disk as well, on the first poll. `--select`/`--ignore`/`--project-root` all apply. `--watch-max-cycles N` stops after N polls instead of running forever, mainly useful for a scripted check.
 
 ### A Claude Code hook (automatic, every session)
 
@@ -197,7 +197,7 @@ If `transcript_path` is missing, empty, or doesn't point at a real file, if the 
 - `--min-grade LETTER` -- with `--summary`, print only sessions graded that letter or worse
 - `--sort path` -- with `--summary`, order rows by file path instead of worst-first
 - `--select RULE[,RULE...]` / `--ignore RULE[,RULE...]` -- only report, or never report, findings from these rule IDs (applies before grading, and before `--fail-on`)
-- `--watch [DIR]` -- poll DIR (default `~/.claude/projects`) for new or changed sessions and print only findings new since the last poll, until interrupted; `--watch-interval SECONDS` and `--watch-max-cycles N` tune it
+- `--watch [DIR]` -- poll DIR (default `~/.claude/projects`) for new or changed sessions and print the findings in what is written after it starts, until interrupted; `--watch-replay` also reports what is already on disk, and `--watch-interval SECONDS` and `--watch-max-cycles N` tune it
 
 ## What it checks
 

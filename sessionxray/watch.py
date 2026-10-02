@@ -18,12 +18,12 @@ from .scanner import scan_session
 @dataclass
 class WatchState:
     """What poll() has already reported, so a later call surfaces only the
-    delta. A fresh WatchState (the first poll) reports every finding present
-    in every file under the watched directory -- there is no earlier baseline
-    to diff against yet."""
+    delta. Without a baseline() first, the first poll reports every finding
+    present in every file under the watched directory."""
 
     stamps: dict = field(default_factory=dict)  # str(path) -> (st_mtime_ns, st_size) last scanned at
     seen: set = field(default_factory=set)  # (path, rule_id, event_index, title, evidence) already reported
+    baseline_sizes: dict = field(default_factory=dict)  # str(path) -> st_size at baseline, until its first rescan
 
 
 def _list_jsonl(directory) -> list:
@@ -33,6 +33,34 @@ def _list_jsonl(directory) -> list:
             if fn.lower().endswith(".jsonl"):
                 found.append(os.path.join(dirpath, fn))
     return sorted(found)
+
+
+def baseline(directory, state: WatchState) -> None:
+    """Mark every file already under `directory` as seen up to its current
+    size, without scanning it, so the next poll() reports only what is
+    written from now on."""
+    if not os.path.isdir(directory):
+        return
+    for path in _list_jsonl(directory):
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        state.stamps[path] = (st.st_mtime_ns, st.st_size)
+        state.baseline_sizes[path] = st.st_size
+
+
+def _lines_before(path, size: int) -> int:
+    """Newlines in the first `size` bytes, which is the event index of the first line written after them."""
+    count = 0
+    with open(path, "rb") as fh:
+        while size > 0:
+            chunk = fh.read(min(size, 1 << 20))
+            if not chunk:
+                break
+            count += chunk.count(b"\n")
+            size -= len(chunk)
+    return count
 
 
 def poll(directory, state: WatchState, project_root_override=None, select=None, ignore=None) -> list:
@@ -63,32 +91,40 @@ def poll(directory, state: WatchState, project_root_override=None, select=None, 
             continue
         state.stamps[path] = stamp
 
+        base = state.baseline_sizes.get(path)
         try:
             # Every agent-*.jsonl is polled as a file of its own, so folding
             # subagents into their parent here would report them twice.
             result = scan_session(path, project_root_override, select=select, ignore=ignore,
                                   include_subagents=False)
+            # A file that shrank was rewritten, so none of it is known to predate the baseline.
+            floor = _lines_before(path, base) if base and st.st_size >= base else None
         except OSError:
             continue
+        state.baseline_sizes.pop(path, None)
 
         for f in result.findings:
             key = (path, f.rule_id, f.event_index, f.title, f.evidence)
             if key in state.seen:
                 continue
             state.seen.add(key)
-            new_items.append((path, f))
+            if floor is None or f.event_index >= floor:
+                new_items.append((path, f))
 
     return new_items
 
 
 def run_watch(directory, interval=2.0, max_cycles=None, project_root_override=None,
-              select=None, ignore=None, on_findings=None, sleep=time.sleep) -> None:
+              select=None, ignore=None, on_findings=None, sleep=time.sleep, replay=False) -> None:
     """Poll `directory` on a loop, calling `on_findings(path, finding)` for
     each finding new since the previous poll. Runs forever when `max_cycles`
     is None (the CLI default); a caller that wants a bounded run instead of a
     daemon -- a test, or a scripted "watch for a minute" check -- passes a
-    cycle count instead."""
+    cycle count instead. Findings already on disk when the watch starts are
+    skipped unless `replay` is set."""
     state = WatchState()
+    if not replay:
+        baseline(directory, state)
     cycles = 0
     while max_cycles is None or cycles < max_cycles:
         for path, finding in poll(directory, state, project_root_override, select, ignore):

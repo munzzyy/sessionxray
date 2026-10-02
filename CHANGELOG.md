@@ -11,8 +11,9 @@ under MIT.
   those findings before grading, so a rule that is wrong for your workflow
   does not cost you the grade either.
 - `--watch [DIR]` polls a directory (default `~/.claude/projects`) for new or
-  changed session files and prints findings as they turn up.
-  `--watch-interval` and `--watch-max-cycles` tune it.
+  changed session files and prints findings as they turn up. It starts from
+  now: what is already on disk is not scanned or reported, unless you add
+  `--watch-replay`. `--watch-interval` and `--watch-max-cycles` tune it.
 - A `--json` or `--summary` run that trips `--fail-on` names the session and
   its worst finding on stderr.
 - Subagent transcripts under `<session-id>/subagents/`, and under
