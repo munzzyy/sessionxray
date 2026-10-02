@@ -24,7 +24,7 @@ import re
 
 from ..discovery import ParsedSession
 from ..finding import Category, Severity
-from ._util import classify_tool, mk, text_variants
+from ._util import classify_tool, mk, redact, text_variants
 
 RULE_ID = "SXR-007"
 _I = re.IGNORECASE
@@ -95,6 +95,19 @@ _PATTERNS = [
 ]
 
 
+_WINDOW = 60
+
+
+def _evidence(redacted: str, rx) -> str:
+    """The match with about _WINDOW characters either side, cut from text that is
+    already redacted so the cut can't leave half a secret unrecognized."""
+    m = rx.search(redacted)
+    if not m:
+        return redacted
+    start, end = max(0, m.start() - _WINDOW), min(len(redacted), m.end() + _WINDOW)
+    return ("..." if start else "") + redacted[start:end] + ("..." if end < len(redacted) else "")
+
+
 def check(session: ParsedSession) -> list:
     findings: list = []
     seen: set = set()
@@ -106,10 +119,13 @@ def check(session: ParsedSession) -> list:
             continue
         source = f" (from a {tr.tool_name} result)" if tr.tool_name else " (from a tool result)"
         for text, hidden_by in text_variants(tr.text):
+            redacted = None
             for rx, title, detail in _PATTERNS:
                 key = (tr.index, title)
                 if key in seen or not rx.search(text):
                     continue
+                if redacted is None:
+                    redacted = redact(text)
                 seen.add(key)
                 note = (f" The wording only appears once the text is decoded: it was hidden with "
                         f"{hidden_by}.") if hidden_by else ""
@@ -117,7 +133,7 @@ def check(session: ParsedSession) -> list:
                     RULE_ID, Category.INJECTION, Severity.MEDIUM, title,
                     detail + f" This text came back from a tool call{source} -- content the agent "
                     "consumed but did not write itself." + note,
-                    text, tr.index, tr.tool_name,
+                    _evidence(redacted, rx), tr.index, tr.tool_name,
                     "Review what the agent did right after this tool call. A finding here means the "
                     "agent was exposed to injected text, not that it obeyed it.",
                 ))
