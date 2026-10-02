@@ -17,7 +17,7 @@ import re
 
 from ..discovery import NO_HOME, ParsedSession
 from ..finding import Category, Severity
-from ._util import (bash_command, classify_tool, field_str, is_scratch_path, is_under,
+from ._util import (bash_command, classify_tool, file_tool_paths, is_scratch_path, is_under,
                      mask_quoted, mcp_is_write, mcp_paths, mk, normalize_path,
                      split_bash_segments)
 
@@ -67,8 +67,7 @@ def check(session: ParsedSession) -> list:
     for tc in session.tool_calls:
         kind = classify_tool(tc.tool_name)
         if kind in ("read", "write", "edit"):
-            p = field_str(tc.input, "file_path", "path", "notebook_path")
-            if p:
+            for p in file_tool_paths(tc):
                 f = _check_path(p, tc.cwd, root, home, is_write=(kind != "read"),
                                  evidence=p, event_index=tc.index, tool_name=tc.tool_name, seen=seen)
                 if f:

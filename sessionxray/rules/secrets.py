@@ -17,7 +17,7 @@ import re
 
 from ..discovery import ParsedSession
 from ..finding import Category, Severity
-from ._util import (bash_command_raw, classify_tool, field_str, flatten_text,
+from ._util import (bash_command_raw, classify_tool, field_str, file_tool_paths, flatten_text,
                      heredoc_bodies, mcp_command_text, mcp_paths, mk,
                      split_bash_pipelines, strip_heredocs)
 
@@ -32,7 +32,7 @@ _I = re.IGNORECASE
 # real one, stays.
 _SENSITIVE_PATH_RE = re.compile(
     r"(?:"
-    r"/\.ssh/|~/\.ssh\b|\bid_rsa\b|\bid_ed25519\b|"
+    r"/\.ssh(?![\w.\-])|~/\.ssh\b|\bid_rsa\b|\bid_ed25519\b|"
     r"/\.aws/credentials\b|"
     r"/\.config/gcloud\b|/\.netrc\b|\.netrc\b|"
     r"/\.docker/config\.json\b|/\.kube/config\b|"
@@ -98,8 +98,7 @@ def check(session: ParsedSession) -> list:
             if cmd:
                 _scan_bash(cmd, tc, findings, seen)
         elif kind == "read":
-            p = field_str(tc.input, "file_path", "path", "notebook_path")
-            if p:
+            for p in file_tool_paths(tc):
                 _scan_path(p, tc, findings, seen)
         elif kind in ("write", "edit"):
             p = field_str(tc.input, "file_path", "path", "notebook_path")

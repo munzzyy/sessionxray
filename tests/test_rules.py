@@ -415,6 +415,8 @@ class UtilHelpers(unittest.TestCase):
         self.assertEqual(_util.classify_tool("mcp__github__create_issue"), "mcp")
         self.assertEqual(_util.classify_tool("WebSearch"), "web")
         self.assertEqual(_util.classify_tool("TaskCreate"), "other")
+        for name in ("Grep", "Glob", "LS"):
+            self.assertEqual(_util.classify_tool(name), "read")
 
 
 class HeredocScanning(unittest.TestCase):
@@ -747,6 +749,43 @@ class CredentialEgressCorrelation(unittest.TestCase):
     def test_real_dotenv_is_still_a_credential_path(self):
         r = one_call("Bash", {"command": "cat .env"})
         self.assertTrue(by_cat(r, Category.SECRET))
+
+
+class SearchTools(unittest.TestCase):
+    """Grep, Glob and LS read the filesystem as surely as Read does."""
+
+    def _titles(self, r, rule_id):
+        return [(f.severity, f.title) for f in by_rule(r, rule_id)]
+
+    def test_content_grep_over_ssh_is_a_credential_read(self):
+        r = one_call("Grep", {"pattern": "PRIVATE KEY", "path": "/home/testuser/.ssh",
+                              "output_mode": "content"})
+        self.assertEqual(self._titles(r, "SXR-001"),
+                         [(Severity.MEDIUM, "Read touches a sensitive directory outside the project root")])
+        self.assertEqual(self._titles(r, "SXR-003"), [(Severity.HIGH, "Reads a credential path")])
+
+    def test_glob_and_ls_outside_the_root_are_reach(self):
+        for name, inp in (("Glob", {"pattern": "**/*", "path": "/home/testuser/.aws"}),
+                          ("Glob", {"pattern": "/home/testuser/.aws/**"}),
+                          ("LS", {"path": "/home/testuser/.ssh"})):
+            with self.subTest(tool=name, input=inp):
+                self.assertEqual(
+                    self._titles(one_call(name, inp), "SXR-001"),
+                    [(Severity.MEDIUM, "Read touches a sensitive directory outside the project root")])
+
+    def test_bash_grep_over_a_bare_ssh_dir_is_a_credential_path(self):
+        r = one_call("Bash", {"command": "grep -r 'PRIVATE KEY' /home/testuser/.ssh"})
+        self.assertEqual([f.severity for f in by_rule(r, "SXR-003")], [Severity.HIGH])
+
+    def test_searches_inside_the_project_are_silent(self):
+        for name, inp in (("Grep", {"pattern": "TODO"}),
+                          ("Grep", {"pattern": "TODO", "path": f"{DEFAULT_ROOT}/src"}),
+                          ("Glob", {"pattern": "src/**/*.py"})):
+            with self.subTest(tool=name, input=inp):
+                self.assertEqual(one_call(name, inp).findings, [])
+
+    def test_a_grep_pattern_is_never_read_as_a_path(self):
+        self.assertEqual(one_call("Grep", {"pattern": "/etc/shadow"}).findings, [])
 
 
 class EnvPropertyAccess(unittest.TestCase):

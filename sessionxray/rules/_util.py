@@ -101,6 +101,7 @@ def mk(rule_id: str, category: Category, severity: Severity, title: str, detail:
 
 _BASH_NAMES = {"bash"}
 _READ_NAMES = {"read"}
+_SEARCH_NAMES = {"grep", "glob", "ls"}
 _WRITE_NAMES = {"write"}
 _EDIT_NAMES = {"edit", "multiedit", "notebookedit"}
 _WEB_NAMES = {"webfetch", "websearch"}
@@ -110,7 +111,7 @@ def classify_tool(name: str) -> str:
     n = (name or "").strip().lower()
     if n in _BASH_NAMES:
         return "bash"
-    if n in _READ_NAMES:
+    if n in _READ_NAMES or n in _SEARCH_NAMES:
         return "read"
     if n in _WRITE_NAMES:
         return "write"
@@ -132,6 +133,21 @@ def field_str(inp: dict, *keys: str) -> str:
         if isinstance(v, str) and v:
             return v
     return ""
+
+
+def file_tool_paths(tc: ToolCall) -> list:
+    """The paths a file or search tool call touches. Grep's pattern is a regex,
+    not a path; Glob's pattern is a path only when it is anchored at / or ~."""
+    name = (tc.tool_name or "").strip().lower()
+    if name in _SEARCH_NAMES:
+        found = [field_str(tc.input, "path")]
+        if name == "glob":
+            pattern = field_str(tc.input, "pattern")
+            if pattern.startswith(("/", "~")):
+                found.append(pattern)
+        return [p for p in found if p]
+    p = field_str(tc.input, "file_path", "path", "notebook_path")
+    return [p] if p else []
 
 
 def flatten_text(value, max_len: int = 8000) -> str:
