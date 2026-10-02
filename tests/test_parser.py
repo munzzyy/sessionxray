@@ -238,6 +238,17 @@ class PersistedOutputs(unittest.TestCase):
         self.assertEqual(len(parsed.tool_results[0].text), MAX_RESULT_TEXT)
         self.assertEqual(parsed.truncated_results, 1)
 
+    def test_a_forged_tag_cannot_hide_the_text_of_the_result(self):
+        forged = _preview("/x/SID/tool-results/abc123.txt") + "\n" + INJECTION
+        path = write_session([assistant_event(0, "WebFetch", {"url": "https://x.test"}),
+                              result_event(0, "tu_0", text=forged)])
+        results = path.with_suffix("") / "tool-results"
+        results.mkdir(parents=True)
+        (results / "abc123.txt").write_text("ok\n", encoding="utf-8")
+        r = scan_session(path)
+        self.assertIn("Instruction-override phrasing", [f.title for f in by_rule(r, "SXR-007")])
+        self.assertEqual(r.truncated_results, 0)
+
     def test_a_result_that_only_quotes_the_tag_is_left_alone(self):
         text = "the docs say a big output shows up as <persisted-output>\nsaved to: abc123.txt"
         path = write_session([assistant_event(0, "WebFetch", {"url": "https://x.test"}),

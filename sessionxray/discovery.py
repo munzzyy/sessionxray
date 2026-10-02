@@ -361,9 +361,10 @@ def _session_dir(path: Path) -> Path:
 
 
 def _load_persisted_outputs(path: Path, tool_results: list) -> None:
-    """Scan the saved output in place of its preview. Only a strictly named, non-symlink file in this
+    """Scan the saved output as well as its preview. Only a strictly named, non-symlink file in this
     session's own tool-results/ is opened, never the path the transcript records."""
     results_dir = _session_dir(path) / "tool-results"
+    previews = []
     for tr in tool_results:
         m = _PERSISTED_RE.match(tr.text)
         if not m:
@@ -382,7 +383,10 @@ def _load_persisted_outputs(path: Path, tool_results: list) -> None:
             # Only the preview was scanned.
             tr.truncated = True
         else:
+            # The preview is still scanned, so a result that forges the tag cannot hide its own text.
+            previews.append(ToolResultText(tr.index, tr.tool_use_id, tr.text, tr.tool_name, tr.truncated))
             tr.text, tr.truncated = _cap(text)
+    tool_results.extend(previews)
 
 
 def _correlate_result_names(tool_calls: list, tool_results: list) -> None:
