@@ -239,7 +239,6 @@ One unreadable file does not stop a scan. The other sessions are still scanned a
 
 These are the open items a patch cannot close.
 
-- v0.2.0. The last tag is v0.1.0 from August. Everything under Unreleased in [CHANGELOG.md](CHANGELOG.md) is only on `main` until it is tagged, the terminal escape fix included. [SECURITY.md](SECURITY.md) promises fixes on the latest tagged version. The pipx line in Install builds from `main` and already has all of it.
 - The Python floor. CI tests 3.9, 3.11, 3.12, 3.13 and 3.14. GitHub moves its `ubuntu-latest` runner to a new Ubuntu image starting October 19, 2026, and if 3.9 is not available there the floor has to be decided on purpose.
 - Reports from other Claude Code versions. Subagent transcripts under `<session-id>/subagents/` and saved tool outputs under `<session-id>/tool-results/` are an undocumented layout, and both have been checked against one Claude Code version so far. If the subagents of a session do not show up in its report, or a large tool output counts as truncated while its file is right there, open an issue with your Claude Code version and the file names in those directories. The names are enough; leave the contents out.
 

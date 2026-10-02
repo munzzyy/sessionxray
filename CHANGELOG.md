@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-10-02)
 
 Licensed GPL-3.0-or-later from this release on. Releases up to 0.1.0 stay
 under MIT.
