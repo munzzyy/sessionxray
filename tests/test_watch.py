@@ -18,6 +18,7 @@ from sessionxray.watch import WatchState, baseline, poll, run_watch
 from tests._helpers import assistant_event, write_session
 
 FIXTURES = Path(__file__).parent / "fixtures"
+QUIET_LINE = '{"type": "user", "message": {"role": "user", "content": "keep going"}}\n'
 
 
 def _append_first_line_of(name, path):
@@ -182,6 +183,50 @@ class Baseline(unittest.TestCase):
             fh.write(first)
         items = poll(self.dir, state)
         self.assertEqual({f.event_index for _p, f in items}, {0})
+
+    def test_a_file_rewritten_shorter_after_a_poll_is_reported_in_full(self):
+        state = WatchState()
+        baseline(self.dir, state)
+        _append_first_line_of("secrets.jsonl", self.path)
+        self.assertTrue(poll(self.dir, state))
+        with open(FIXTURES / "malicious" / "persistence.jsonl", encoding="utf-8") as fh:
+            first = fh.readline()
+        with open(self.path, "w", encoding="utf-8") as fh:
+            fh.write(first)
+        self.assertEqual({f.event_index for _p, f in poll(self.dir, state)}, {0})
+
+    def test_a_file_empty_at_the_baseline_is_reported_in_full(self):
+        empty = os.path.join(self.dir, "b.jsonl")
+        open(empty, "w").close()
+        state = WatchState()
+        baseline(self.dir, state)
+        with open(empty, "w", encoding="utf-8") as fh:
+            fh.write("not json\nstill not json\n")
+        self.assertEqual([f.rule_id for _p, f in poll(self.dir, state)], ["SXR-000"])
+
+    def test_nothing_older_than_the_baseline_turns_up_on_a_later_poll(self):
+        state = WatchState()
+        baseline(self.dir, state)
+        for _ in range(2):
+            with open(self.path, "a", encoding="utf-8") as fh:
+                fh.write(QUIET_LINE)
+            self.assertEqual(poll(self.dir, state), [])
+
+    def test_a_repeat_of_a_finding_older_than_the_baseline_is_reported(self):
+        _append_first_line_of("secrets.jsonl", self.path)
+        with open(self.path, "rb") as fh:
+            old_lines = fh.read().count(b"\n")
+        state = WatchState()
+        baseline(self.dir, state)
+        _append_first_line_of("secrets.jsonl", self.path)
+        items = poll(self.dir, state)
+        expected = {(f.rule_id, f.title, f.evidence) for f in scan_session(self.path).findings
+                    if old_lines in (f.event_index,) + f.also_at}
+        self.assertIn("SXR-003", {rule for rule, _t, _e in expected})
+        self.assertEqual({(f.rule_id, f.title, f.evidence) for _p, f in items}, expected)
+        self.assertEqual({f.event_index for _p, f in items}, {old_lines})
+        _append_first_line_of("secrets.jsonl", self.path)
+        self.assertEqual(poll(self.dir, state), [])
 
 
 class RunWatch(unittest.TestCase):

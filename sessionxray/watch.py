@@ -12,7 +12,7 @@ import os
 import time
 from dataclasses import dataclass, field
 
-from .scanner import scan_session
+from .scanner import _collapse_repeats, scan_session
 
 
 @dataclass
@@ -23,7 +23,7 @@ class WatchState:
 
     stamps: dict = field(default_factory=dict)  # str(path) -> (st_mtime_ns, st_size) last scanned at
     seen: set = field(default_factory=set)  # (path, rule_id, event_index, title, evidence) already reported
-    baseline_sizes: dict = field(default_factory=dict)  # str(path) -> st_size at baseline, until its first rescan
+    baseline_sizes: dict = field(default_factory=dict)  # str(path) -> st_size at baseline, not reported
 
 
 def _list_jsonl(directory) -> list:
@@ -87,29 +87,34 @@ def poll(directory, state: WatchState, project_root_override=None, select=None, 
             continue
         # An append inside the mtime granularity leaves mtime unchanged; size catches it.
         stamp = (st.st_mtime_ns, st.st_size)
-        if state.stamps.get(path) == stamp:
+        last = state.stamps.get(path)
+        if last == stamp:
             continue
         state.stamps[path] = stamp
+        if last is not None and st.st_size < last[1]:
+            # A file that shrank was rewritten, so none of it is known to predate the baseline.
+            state.baseline_sizes.pop(path, None)
 
         base = state.baseline_sizes.get(path)
         try:
             # Every agent-*.jsonl is polled as a file of its own, so folding
             # subagents into their parent here would report them twice.
             result = scan_session(path, project_root_override, select=select, ignore=ignore,
-                                  include_subagents=False)
-            # A file that shrank was rewritten, so none of it is known to predate the baseline.
-            floor = _lines_before(path, base) if base and st.st_size >= base else None
+                                  include_subagents=False, collapse=False)
+            findings = result.findings
+            if base:
+                floor = _lines_before(path, base)
+                findings = [f for f in findings if f.event_index >= floor]
         except OSError:
             continue
-        state.baseline_sizes.pop(path, None)
 
-        for f in result.findings:
+        # Fold repeats after the cut, so a pattern older than the baseline shows at its first new event.
+        for f in _collapse_repeats(findings):
             key = (path, f.rule_id, f.event_index, f.title, f.evidence)
             if key in state.seen:
                 continue
             state.seen.add(key)
-            if floor is None or f.event_index >= floor:
-                new_items.append((path, f))
+            new_items.append((path, f))
 
     return new_items
 

@@ -55,14 +55,16 @@ def _filter_by_rule(findings: list, select, ignore) -> list:
 
 
 def scan_session(path, project_root_override=None, select=None, ignore=None,
-                 include_subagents=True) -> SessionResult:
+                 include_subagents=True, collapse=True) -> SessionResult:
     """Scan one transcript and, unless told not to, the subagent transcripts
     stored beside it. Each subagent is parsed on its own so its event indices
-    and root inference stay its own; its findings join the session's grade."""
+    and root inference stay its own; its findings join the session's grade.
+    With `collapse` off, every repeat stays a finding of its own."""
+    fold = _collapse_repeats if collapse else list
     parsed = parse_session(path)
     if project_root_override:
         parsed.project_root = project_root_override
-    findings = _collapse_repeats(run_all(parsed))
+    findings = fold(run_all(parsed))
     hosts = set(network.contacted_hosts(parsed))
     event_count = parsed.event_count
     tool_call_count = len(parsed.tool_calls)
@@ -80,7 +82,7 @@ def scan_session(path, project_root_override=None, select=None, ignore=None,
             sub.home = parsed.home
         agent_id = sub.agent_id or sub_path.stem[len("agent-"):]
         findings.extend(dataclasses.replace(f, agent_id=agent_id)
-                        for f in _collapse_repeats(run_all(sub)))
+                        for f in fold(run_all(sub)))
         hosts.update(network.contacted_hosts(sub))
         event_count += sub.event_count
         tool_call_count += len(sub.tool_calls)

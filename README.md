@@ -147,7 +147,7 @@ sessionxray --watch                      # polls ~/.claude/projects every 2s unt
 sessionxray --watch /path/to/sessions --watch-interval 5
 ```
 
-It's mtime polling, not inotify, so it works anywhere sessionxray already runs. When it starts it notes how far each existing file goes without scanning it, so it is ready at once even on a big `~/.claude/projects`, and an old finding never shows up in the feed. `--watch-replay` reports everything already on disk as well, on the first poll. `--select`/`--ignore`/`--project-root` all apply. `--watch-max-cycles N` stops after N polls instead of running forever, mainly useful for a scripted check.
+It's mtime polling, not inotify, so it works anywhere sessionxray already runs. When it starts it notes how far each existing file goes without scanning it, so it is ready at once even on a big `~/.claude/projects`, and an old finding never shows up in the feed. If the same thing happens again after the start, it shows up at the new event. `--watch-replay` reports everything already on disk as well, on the first poll. `--select`/`--ignore`/`--project-root` all apply. `--watch-max-cycles N` stops after N polls instead of running forever, mainly useful for a scripted check.
 
 ### A Claude Code hook (automatic, every session)
 
