@@ -14,6 +14,7 @@ from .discovery import _to_posix_path, discover_sessions
 from .finding import Severity
 from .report import parse_grade, render_human, render_json, render_summary, render_watch_line
 from .rules import ALL_RULE_IDS
+from .rules._util import _escape_controls
 from .scanner import scan_session
 from .watch import run_watch
 
@@ -143,7 +144,8 @@ def _cmd_tail(limit: int) -> int:
     print(f"sessionxray: {len(lines)} of {len(all_lines)} logged session(s), newest first")
     print()
     for ln in lines:
-        print(ln)
+        # Logs written by older hook versions can still hold raw escape codes.
+        print(_escape_controls(ln))
     return 0
 
 
@@ -173,7 +175,7 @@ def _print_gate_trip(results: list, threshold) -> None:
         if worst is None or worst < threshold:
             continue
         finding = next(f for f in r.findings if f.severity == worst)
-        print(f"sessionxray: {r.path} tripped --fail-on {threshold.label} "
+        print(f"sessionxray: {_escape_controls(r.path)} tripped --fail-on {threshold.label} "
               f"({finding.rule_id} {finding.title!r}, severity {worst.label})", file=sys.stderr)
 
 

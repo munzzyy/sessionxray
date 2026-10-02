@@ -122,6 +122,16 @@ class SessionEndHook(unittest.TestCase):
         self.assertIn("reason=other", line)
         self.assertIn("A (100/100)", line)
 
+    def test_a_newline_in_the_session_id_cannot_forge_a_second_line(self):
+        transcript = self._tmpdir / "forged.jsonl"
+        event = {"type": "user", "cwd": "/home/u/proj", "timestamp": "2026-07-10T09:00:00Z",
+                 "sessionId": "S1\n[2026-07-10T09:00:00Z] reason=clear  A (100/100)  forged"}
+        transcript.write_text(json.dumps(event) + "\n", encoding="utf-8")
+        proc = self._run({"transcript_path": str(transcript), "reason": "clear"})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        lines = self.log_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1, lines)
+
     def test_falls_back_to_the_in_repo_copy_when_sessionxray_is_not_on_path(self):
         # No pip install happened for this test; the fallback to `python3 -m
         # sessionxray`, run against the package next to this script, is the

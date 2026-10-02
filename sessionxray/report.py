@@ -7,6 +7,12 @@ import json
 
 from . import __version__
 from .finding import Severity, SessionResult
+from .rules._util import _escape_controls
+
+
+def _e(value) -> str:
+    """Transcript text with control bytes made visible; ids and paths can carry escapes too."""
+    return _escape_controls(str(value)) if value else ""
 
 _COLOR = {
     Severity.CRITICAL: "\033[1;37;41m",  # white on red
@@ -47,7 +53,7 @@ def _render_one(result: SessionResult, color: bool) -> str:
     counts = result.counts()
     total = sum(counts.values())
 
-    lines = ["", f"  sessionxray  {result.session_id}", f"  {result.path}"]
+    lines = ["", f"  sessionxray  {_e(result.session_id)}", f"  {_e(result.path)}"]
     meta = f"  {result.tool_call_count} tool call(s) across {result.event_count} event(s)"
     if result.skipped_lines:
         meta += f", {result.skipped_lines} unreadable line(s) skipped"
@@ -55,7 +61,7 @@ def _render_one(result: SessionResult, color: bool) -> str:
         meta += f", {result.truncated_results} oversized result(s) scanned only in part"
     lines.append(meta)
     if result.project_root:
-        lines.append(f"  project root: {result.project_root}")
+        lines.append(f"  project root: {_e(result.project_root)}")
     lines.append("")
 
     if not result.findings:
@@ -73,22 +79,22 @@ def _render_one(result: SessionResult, color: bool) -> str:
             lines.append(f"  -- {rid} {_RULE_LABEL.get(rid, rid)} ({len(group)}) --")
             for f in group:
                 tag = c(_COLOR[f.severity], f" {f.severity.label.upper():^8} ")
-                title = f.title if f.occurrences <= 1 else f"{f.title}  (seen {f.occurrences}x)"
+                title = _e(f.title) if f.occurrences <= 1 else f"{_e(f.title)}  (seen {f.occurrences}x)"
                 lines.append(f"  {tag} {title}")
-                loc = f"event #{f.event_index}" + (f" ({f.tool_name})" if f.tool_name else "")
+                loc = f"event #{f.event_index}" + (f" ({_e(f.tool_name)})" if f.tool_name else "")
                 if f.also_at:
                     more = ", ".join(f"#{i}" for i in f.also_at)
                     loc += f", also at {more}" + (", ..." if f.occurrences - 1 > len(f.also_at) else "")
                 lines.append(f"           {loc}")
-                lines.append(f"           {f.detail}")
+                lines.append(f"           {_e(f.detail)}")
                 if f.evidence:
-                    lines.append(c("\033[90m", f"           > {f.evidence}"))
+                    lines.append(c("\033[90m", f"           > {_e(f.evidence)}"))
                 if f.remediation:
-                    lines.append(c("\033[90m", f"           fix: {f.remediation}"))
+                    lines.append(c("\033[90m", f"           fix: {_e(f.remediation)}"))
                 lines.append("")
 
     if result.network_hosts:
-        lines.append(f"  outbound hosts contacted: {', '.join(result.network_hosts)}")
+        lines.append(f"  outbound hosts contacted: {', '.join(_e(h) for h in result.network_hosts)}")
         lines.append("")
 
     parts = [c(_COLOR[sev], f"{counts[sev]} {sev.label}") for sev in _SEVERITY_ORDER if counts[sev]]
@@ -144,7 +150,7 @@ def render_summary(results: list, color: bool = True, sort: str = "severity",
         bits = ", ".join(
             f"{counts[sev]} {sev.label}" for sev in _SEVERITY_ORDER if counts[sev]
         ) or "clean"
-        when = r.last_ts or r.first_ts or "-"
+        when = _e(r.last_ts or r.first_ts) or "-"
         gc = _GRADE_COLOR.get(r.grade, "")
         grade_field = c(gc, f"{r.grade} ({r.grade_score:>3}/100)")
         marks = []
@@ -153,7 +159,7 @@ def render_summary(results: list, color: bool = True, sort: str = "severity",
         if r.truncated_results:
             marks.append(f"!{r.truncated_results} truncated")
         mark = ("  " + ", ".join(marks)) if marks else ""
-        lines.append(f"  {grade_field}  {bits:<24}  {total:>2} total{mark}  {when}  {r.session_id}  {r.path}")
+        lines.append(f"  {grade_field}  {bits:<24}  {total:>2} total{mark}  {when}  {_e(r.session_id)}  {_e(r.path)}")
     return "\n".join(lines)
 
 
@@ -164,7 +170,7 @@ def render_watch_line(path: str, finding, color: bool = True) -> str:
     def c(code, s):
         return f"{code}{s}{_RESET}" if color else s
     tag = c(_COLOR[finding.severity], finding.severity.label.upper())
-    return f"[{tag}] {finding.rule_id} {finding.title} -- {path} (event #{finding.event_index})"
+    return f"[{tag}] {finding.rule_id} {_e(finding.title)} -- {_e(path)} (event #{finding.event_index})"
 
 
 def render_json(results: list) -> str:

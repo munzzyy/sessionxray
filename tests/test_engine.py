@@ -4,6 +4,9 @@ import contextlib
 import io
 import json
 import os
+import re
+import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,8 +15,9 @@ from unittest import mock
 from sessionxray import cli
 from sessionxray.finding import Category, Finding, Severity
 from sessionxray.grade import grade
-from sessionxray.report import render_human, render_json, render_summary
-from tests._helpers import assistant_event, write_session
+from sessionxray.report import render_human, render_json, render_summary, render_watch_line
+from sessionxray.scanner import scan_session
+from tests._helpers import assistant_event, result_event, write_session
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -95,6 +99,89 @@ class Reporting(unittest.TestCase):
         r = self._scan_one(FIXTURES / "malicious" / "secrets.jsonl")
         blob = json.dumps([f.evidence for f in r.findings])
         self.assertNotIn("AKIAIOSFODNN7EXAMPLE", blob)
+
+
+_RAW_CONTROL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+
+
+def _hostile_session():
+    """Escape codes in every transcript field a report prints, not just a tool result."""
+    sid = "S\x1b]0;pwned\x07\x1b[2J\n[forged] A"
+    cwd = "/home/u/proj\x1b[31m"
+    events = [
+        assistant_event(0, "Read", {"file_path": "/etc/sh\x1b[2Jadow"}, cwd=cwd),
+        result_event(0, "tu_0", text="root:x:0:0", cwd=cwd),
+        assistant_event(1, "WebFetch", {"url": "https://evil\x1bc.example.com/x"}, cwd=cwd),
+        result_event(1, "tu_1", text="ok", cwd=cwd),
+        assistant_event(2, "mcp__x\x1b[2J", {"path": "/etc/hosts"}, cwd=cwd),
+    ]
+    for e in events:
+        e["sessionId"] = sid
+        e["timestamp"] = "2026-07-10T09:00:00Z\x1b[1m"
+    return write_session(events)
+
+
+class ControlBytesInTranscriptFields(unittest.TestCase):
+    def setUp(self):
+        self.path = _hostile_session()
+        self.addCleanup(shutil.rmtree, self.path.parent, ignore_errors=True)
+        self.result = scan_session(self.path)
+
+    def assertNoRawControls(self, text):
+        hit = _RAW_CONTROL.search(text)
+        self.assertIsNone(hit, f"raw control byte {hit.group(0)!r} in output" if hit else "")
+
+    def test_the_fixture_really_carries_escapes_into_findings(self):
+        self.assertTrue(any("\x1b" in f.detail for f in self.result.findings))
+        self.assertTrue(any("\x1b" in f.tool_name for f in self.result.findings))
+        self.assertTrue(any("\x1b" in h for h in self.result.network_hosts))
+
+    def test_human_report(self):
+        self.assertNoRawControls(render_human([self.result], color=False))
+
+    def test_summary_is_one_line_per_result(self):
+        text = render_summary([self.result, self.result], color=False)
+        self.assertNoRawControls(text)
+        self.assertEqual(len(text.splitlines()), 2)
+
+    def test_watch_lines(self):
+        self.assertTrue(self.result.findings)
+        for f in self.result.findings:
+            self.assertNoRawControls(render_watch_line("/p/s\x1b[2J.jsonl", f, color=False))
+
+    def test_out_file(self):
+        out_path = self.path.parent / "report.txt"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = cli.main([str(self.path), "--out", str(out_path), "--fail-on", "none"])
+        self.assertEqual(code, 0)
+        self.assertNoRawControls(out_path.read_text(encoding="utf-8"))
+
+    @unittest.skipIf(sys.platform == "win32", "Windows file names cannot hold control characters")
+    def test_gate_trip_pointer(self):
+        hostile = self.path.parent / "s\x1b[2J.jsonl"
+        shutil.copy(FIXTURES / "malicious" / "secrets.jsonl", hostile)
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = cli.main([str(hostile), "--json", "--fail-on", "high"])
+        self.assertEqual(code, 1)
+        self.assertIn("tripped --fail-on", err.getvalue())
+        self.assertNoRawControls(err.getvalue())
+
+    def test_tail_escapes_a_logged_line(self):
+        log_path = self.path.parent / "history.log"
+        log_path.write_text("[2026-07-10T09:00:00Z] reason=clear  A (100/100)  \x1b[2J  x\n",
+                            encoding="utf-8")
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"SESSIONXRAY_HISTORY_LOG": str(log_path)}):
+            with contextlib.redirect_stdout(out):
+                code = cli.main(["--tail"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("\x1b", out.getvalue())
+        self.assertIn("reason=clear", out.getvalue())
+
+    def test_json_keeps_the_raw_values(self):
+        payload = json.loads(render_json([self.result]))
+        self.assertEqual(payload["sessions"][0]["session_id"], "S\x1b]0;pwned\x07\x1b[2J\n[forged] A")
 
 
 class CLI(unittest.TestCase):
