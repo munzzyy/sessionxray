@@ -749,6 +749,24 @@ class CredentialEgressCorrelation(unittest.TestCase):
         self.assertTrue(by_cat(r, Category.SECRET))
 
 
+class EnvPropertyAccess(unittest.TestCase):
+    def test_code_reading_the_environment_is_not_a_dotenv_read(self):
+        for cmd in ("grep -rn 'process.env' src/",
+                    'node -e "console.log(process.env.NODE_ENV)"',
+                    "grep -rn import.meta.env src",
+                    "deno eval \"Deno.env.get('X')\"",
+                    'bun -e "Bun.env.X"'):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(by_rule(one_call("Bash", {"command": cmd}), "SXR-003"), [])
+
+    def test_dotenv_files_still_fire(self):
+        for cmd in ("cat .env", "cat config/.env.local", "source ./.env",
+                    "docker run --env-file .env img", "node --env-file prod.env app.js"):
+            with self.subTest(cmd=cmd):
+                hits = by_rule(one_call("Bash", {"command": cmd}), "SXR-003")
+                self.assertEqual([f.severity for f in hits], [Severity.HIGH])
+
+
 class InjectionProvenance(unittest.TestCase):
     def test_the_agents_own_write_is_not_exposure(self):
         # Claude Code echoes the file body back in a Write result. Scanning it

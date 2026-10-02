@@ -43,7 +43,9 @@ _SENSITIVE_PATH_RE = re.compile(
     r"security\s+find-generic-password|"
     # .env holds live secrets; .env.example and friends are checked into public
     # repos precisely because they hold none, and copying one around is setup,
-    # not credential access.
+    # not credential access. process.env, import.meta.env, Deno.env and Bun.env
+    # are code reading the environment, not a file.
+    r"(?<!\bprocess)(?<!\bmeta)(?<!\bDeno)(?<!\bBun)"
     r"\.env(?:\.local|\.production)?\b(?!\.(?:example|sample|template|dist|schema|tpl|test)\b)|"
     # Windows-shaped credential paths, for backslash paths that appear inside a
     # command string (file-tool paths are canonicalized to POSIX at parse time,
