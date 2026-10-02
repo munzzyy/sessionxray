@@ -170,7 +170,7 @@ With the `sessionxray` command installed (the pipx line above, or `pip install -
 }
 ```
 
-That mode ships inside the package, so it needs nothing else and works on Windows too. Running from a clone with nothing installed, set `"command"` to the script in this repo instead: `/path/to/sessionxray/hooks/sessionxray-sessionend.sh`. The script needs bash and `jq`, and it runs the copy of the package sitting next to it, the same "clone it, no install needed" path the Install section above documents.
+That mode ships inside the package and is plain Python, so it needs no bash and no `jq`. Running from a clone with nothing installed, set `"command"` to the script in this repo instead: `/path/to/sessionxray/hooks/sessionxray-sessionend.sh`. The script needs bash and `jq`, and it runs the copy of the package sitting next to it, the same "clone it, no install needed" path the Install section above documents.
 
 Either way, the hook reads `transcript_path` off the stdin JSON Claude Code sends on `SessionEnd`, grades that session (its subagents included), and appends one line -- a timestamp, the `SessionEnd` reason (`clear`, `resume`, `logout`, ...), and the grade -- to `~/.claude/sessionxray/history.log`. Read the log back, newest first:
 
@@ -235,7 +235,7 @@ One unreadable file does not stop a scan. The other sessions are still scanned a
 
 ## Roadmap
 
-What is left here needs a person more than it needs code.
+These are the open items a patch cannot close.
 
 - v0.2.0. The last tag is v0.1.0 from August. Everything since then is only on `main` until it is tagged: `--select`/`--ignore`, `--watch`, subagent scanning, `--session-end-hook` and the rule fixes. [SECURITY.md](SECURITY.md) promises fixes on the latest tagged version. The pipx line in Install builds from `main` and already has all of it.
 - The Python floor. CI tests 3.9, 3.11, 3.12 and 3.13. GitHub moves its `ubuntu-latest` runner to a new Ubuntu image starting October 19, 2026, and if 3.9 is not available there the floor has to be decided on purpose.
