@@ -105,7 +105,7 @@ _RAW_CONTROL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f\u2028\u2029]")
 
 
 def _hostile_session():
-    """Escape codes in every transcript field a report prints, not just a tool result."""
+    """Escape codes in the session id, cwd, paths, host, tool name and timestamps a report prints."""
     sid = "S\x1b]0;pwned\x07\x1b[2J\n[forged] A\u2028[forged] B"
     cwd = "/home/u/proj\x1b[31m"
     events = [

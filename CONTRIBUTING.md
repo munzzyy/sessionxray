@@ -9,7 +9,7 @@ git clone https://github.com/munzzyy/sessionxray
 cd sessionxray
 ```
 
-There's nothing to install. sessionxray is pure standard library, and so is its test suite.
+There is nothing to install. sessionxray is pure standard library, and so is its test suite.
 
 ## Running the tests
 
@@ -17,7 +17,7 @@ There's nothing to install. sessionxray is pure standard library, and so is its 
 python -m unittest discover -s tests -t .
 ```
 
-That's the whole suite: unit tests per rule, engine tests, and a labeled corpus in `tests/fixtures/`. CI runs the same command across Linux, macOS, and Windows on Python 3.9 through 3.14.
+That is the whole suite: unit tests per rule, engine tests, and a labeled corpus in `tests/fixtures/`. CI runs the same command across Linux, macOS, and Windows on Python 3.9 through 3.14.
 
 ## Adding or fixing a rule
 
