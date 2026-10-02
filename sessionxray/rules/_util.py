@@ -38,6 +38,11 @@ _SECRET_RULES = [
     (re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b"), None, "google-api-key"),
     (re.compile(r"\bglpat-[0-9A-Za-z_\-]{20,}\b"), None, "gitlab-token"),
     (re.compile(r"(?i)\bAuthorization:\s*Bearer\s+([A-Za-z0-9\-_.=]{16,})"), 1, "bearer-token"),
+    (re.compile(r"(?i)\bAuthorization:\s*Basic\s+([A-Za-z0-9+/=]{8,})"), 1, "basic-auth"),
+    # user:password@ in any scheme://; the user name and host stay readable.
+    (re.compile(r"(?i)\b[a-z][a-z0-9+.\-]*://[^\s/:@'\"]+:([^\s/@'\"]+)@"), 1, "url-password"),
+    (re.compile(r"(?i)\bcurl\b[^\n|;&]*?(?:\s-u\s*|\s--user[=\s]\s*)[\"']?[^\s:\"']+:([^\s\"']+)"),
+     1, "basic-auth"),
     (re.compile(r"(?i)" + _SECRET_KEY + r"\s*[:=]\s*[\"']([^\"'\n]{8,})[\"']"), 1, "assigned-secret"),
     # Unquoted form -- `export DB_PASSWORD=Tr0ub4dor3...` is exactly as live a
     # credential as the quoted form, and shell exports/.env files routinely

@@ -390,6 +390,32 @@ class UtilHelpers(unittest.TestCase):
         text = "cd /usr/bin && export BUILD_ID=42"
         self.assertEqual(_util.redact(text), text)
 
+    def test_redact_url_userinfo_keeps_the_user_and_host(self):
+        out = _util.redact("git clone https://cole:hunter2hunter2@example.com/org/repo.git")
+        self.assertNotIn("hunter2hunter2", out)
+        self.assertIn("cole", out)
+        self.assertIn("example.com", out)
+        self.assertNotIn("Pg5ecretPw", _util.redact("psql postgres://app:Pg5ecretPw@db.example.com/prod"))
+
+    def test_redact_curl_user_password(self):
+        for cmd in ("curl -u admin:S3cretPassw0rd https://api.example.com",
+                    "curl --user admin:S3cretPassw0rd https://api.example.com"):
+            with self.subTest(cmd=cmd):
+                out = _util.redact(cmd)
+                self.assertNotIn("S3cretPassw0rd", out)
+                self.assertIn("admin", out)
+
+    def test_redact_basic_auth_header(self):
+        out = _util.redact("curl -H 'Authorization: Basic YWRtaW46UzNjcmV0UGFzc3cwcmQ=' "
+                           "https://api.example.com")
+        self.assertNotIn("YWRtaW46UzNjcmV0UGFzc3cwcmQ=", out)
+
+    def test_redact_leaves_credential_free_userinfo_shapes_alone(self):
+        for text in ("curl -u admin https://x.example.com", "ssh git@github.com",
+                     "https://example.com/a:b@c"):
+            with self.subTest(text=text):
+                self.assertEqual(_util.redact(text), text)
+
     def test_truncate_escapes_control_bytes(self):
         text = "\x1b[2J\x1b[H\x1b[32mNo findings.\x1b[0m"
         out = _util.truncate(text)
@@ -749,6 +775,31 @@ class CredentialEgressCorrelation(unittest.TestCase):
     def test_real_dotenv_is_still_a_credential_path(self):
         r = one_call("Bash", {"command": "cat .env"})
         self.assertTrue(by_cat(r, Category.SECRET))
+
+
+class CredentialsInEvidence(unittest.TestCase):
+    """Reports get pasted into issues and CI logs, so a password typed into a
+    command must not survive into any finding in any format."""
+
+    CASES = (
+        ("git clone https://cole:hunter2hunter2@example.com/org/repo.git", "hunter2hunter2"),
+        ("psql postgres://app:Pg5ecretPw@db.example.com/prod && curl https://db.example.com/health",
+         "Pg5ecretPw"),
+        ("curl -u admin:S3cretPassw0rd https://api.example.com", "S3cretPassw0rd"),
+        ("curl --user admin:S3cretPassw0rd https://api.example.com", "S3cretPassw0rd"),
+        ("curl -H 'Authorization: Basic YWRtaW46UzNjcmV0UGFzc3cwcmQ=' https://api.example.com",
+         "YWRtaW46UzNjcmV0UGFzc3cwcmQ="),
+    )
+
+    def test_no_output_format_carries_the_secret(self):
+        from sessionxray.report import render_human, render_json, render_summary
+        for cmd, secret in self.CASES:
+            with self.subTest(cmd=cmd):
+                r = one_call("Bash", {"command": cmd})
+                self.assertTrue(r.findings, "nothing fired, so nothing was checked")
+                for text in (render_human([r], color=False), render_json([r]),
+                             render_summary([r], color=False)):
+                    self.assertNotIn(secret, text)
 
 
 class RecallGaps(unittest.TestCase):
