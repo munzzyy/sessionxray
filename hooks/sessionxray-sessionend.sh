@@ -10,7 +10,9 @@
 # spot-checking after the fact, not a real-time guardrail -- whatever
 # happened in the session already happened by the time this runs.
 #
-# Register it under hooks.SessionEnd in settings.json; see the README.
+# Register it under hooks.SessionEnd in settings.json; see the README. With
+# sessionxray installed as a command, `sessionxray --session-end-hook` does
+# the same job without bash or jq.
 #
 # Stdin (JSON, per Claude Code's hooks reference):
 #   {session_id, transcript_path, cwd, hook_event_name, reason}
@@ -34,6 +36,8 @@ transcript_path="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/d
 [ -n "$transcript_path" ] && [ -f "$transcript_path" ] || exit 0
 
 reason="$(printf '%s' "$input" | jq -r '.reason // empty' 2>/dev/null)"
+# A newline here would write a second, forged log line.
+reason="${reason//[[:cntrl:]]/}"
 [ -n "$reason" ] || reason="unknown"
 
 # Prefer an installed `sessionxray`. Fall back to running the copy of the
@@ -49,6 +53,7 @@ else
 fi
 
 summary="$(run_sessionxray "$transcript_path" --summary --fail-on none --no-color 2>/dev/null)"
+summary="${summary#"${summary%%[![:space:]]*}"}"
 [ -n "$summary" ] || exit 0
 
 mkdir -p -- "$(dirname -- "$LOG_FILE")" 2>/dev/null || exit 0

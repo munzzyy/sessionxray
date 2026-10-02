@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -132,6 +133,20 @@ class SessionEndHook(unittest.TestCase):
         lines = self.log_path.read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(lines), 1, lines)
 
+    def test_a_newline_in_the_reason_cannot_forge_a_second_line(self):
+        transcript = FIXTURES / "benign" / "benign-session.jsonl"
+        proc = self._run({"transcript_path": str(transcript),
+                          "reason": "clear\n[2026-01-01T00:00:00Z] reason=x  A (100/100)  forged"})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        lines = self.log_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1, lines)
+
+    def test_matches_the_built_in_hook_line_format(self):
+        transcript = FIXTURES / "malicious" / "secrets.jsonl"
+        self._run({"transcript_path": str(transcript), "reason": "clear"})
+        line = self.log_path.read_text(encoding="utf-8").strip()
+        self.assertRegex(line, BuiltInHook.LINE_RE)
+
     def test_a_session_is_graded_with_its_subagents(self):
         transcript = FIXTURES / "subagents" / "PARENT.jsonl"
         proc = self._run({"transcript_path": str(transcript), "reason": "clear"})
@@ -148,6 +163,66 @@ class SessionEndHook(unittest.TestCase):
         proc = self._run({"transcript_path": str(transcript), "reason": "clear"})
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertTrue(self.log_path.exists())
+
+
+class BuiltInHook(unittest.TestCase):
+    """`sessionxray --session-end-hook`, the mode a pipx install points
+    settings.json at. Pure Python, so it runs on every OS, Windows included."""
+
+    LINE_RE = re.compile(r"^\[\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\] reason=clear  F ")
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="sxr-builtin-hook-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.log_path = self.tmp / "history.log"
+
+    def _run(self, stdin: str, log_path=None) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env["SESSIONXRAY_HISTORY_LOG"] = str(log_path or self.log_path)
+        env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+        return subprocess.run([sys.executable, "-m", "sessionxray", "--session-end-hook"],
+                              input=stdin, capture_output=True, text=True, env=env, timeout=60)
+
+    def _lines(self):
+        return self.log_path.read_text(encoding="utf-8").splitlines()
+
+    def test_logs_one_line_and_prints_nothing(self):
+        transcript = FIXTURES / "malicious" / "secrets.jsonl"
+        proc = self._run(json.dumps({"transcript_path": str(transcript), "reason": "clear"}))
+        self.assertEqual((proc.returncode, proc.stdout, proc.stderr), (0, "", ""))
+        lines = self._lines()
+        self.assertEqual(len(lines), 1)
+        self.assertRegex(lines[0], self.LINE_RE)
+        self.assertIn("secrets.jsonl", lines[0])
+
+    def test_bad_input_is_a_quiet_noop(self):
+        for stdin in ("not json", "{}", "[]", "",
+                      json.dumps({"transcript_path": str(self.tmp / "gone.jsonl"), "reason": "clear"})):
+            with self.subTest(stdin=stdin):
+                proc = self._run(stdin)
+                self.assertEqual((proc.returncode, proc.stdout, proc.stderr), (0, "", ""))
+                self.assertFalse(self.log_path.exists())
+
+    @unittest.skipIf(not _POSIX_ENOUGH or getattr(os, "geteuid", lambda: 0)() == 0,
+                     "needs POSIX permissions and a non-root user")
+    def test_an_unwritable_log_dir_is_a_quiet_noop(self):
+        locked = self.tmp / "locked"
+        locked.mkdir()
+        os.chmod(locked, 0o500)
+        self.addCleanup(os.chmod, locked, 0o700)
+        transcript = FIXTURES / "malicious" / "secrets.jsonl"
+        proc = self._run(json.dumps({"transcript_path": str(transcript), "reason": "clear"}),
+                         log_path=locked / "sub" / "history.log")
+        self.assertEqual((proc.returncode, proc.stdout, proc.stderr), (0, "", ""))
+
+    def test_control_characters_in_reason_are_stripped(self):
+        transcript = FIXTURES / "benign" / "benign-session.jsonl"
+        proc = self._run(json.dumps({"transcript_path": str(transcript),
+                                     "reason": "clear\n[2026-01-01T00:00:00Z] reason=x\x1b[2J"}))
+        self.assertEqual(proc.returncode, 0)
+        lines = self._lines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertNotRegex(lines[0], r"[\x00-\x1f\x7f-\x9f]")
 
 
 @unittest.skipUnless(_HAVE_BASH and _POSIX_ENOUGH, "bash required to exercise the real hook script (not on native Windows)")

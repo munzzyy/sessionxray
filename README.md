@@ -149,9 +149,9 @@ It's mtime polling, not inotify, so it works anywhere sessionxray already runs. 
 
 ### A Claude Code hook (automatic, every session)
 
-The command above still has to be run by hand, or wired into something that remembers to run it. `hooks/sessionxray-sessionend.sh` closes that gap: register it as a `SessionEnd` hook and every session gets scanned the moment it ends, with nothing to remember.
+The command above still has to be run by hand, or wired into something that remembers to run it. A `SessionEnd` hook closes that gap: register one and every session gets scanned the moment it ends, with nothing to remember.
 
-Add this to `~/.claude/settings.json` (or a project's own `.claude/settings.json`), pointing at wherever you cloned this repo:
+With the `sessionxray` command installed (the pipx line above, or `pip install -e .`), add this to `~/.claude/settings.json` (or a project's own `.claude/settings.json`):
 
 ```json
 {
@@ -161,7 +161,7 @@ Add this to `~/.claude/settings.json` (or a project's own `.claude/settings.json
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/sessionxray/hooks/sessionxray-sessionend.sh"
+            "command": "sessionxray --session-end-hook"
           }
         ]
       }
@@ -170,7 +170,9 @@ Add this to `~/.claude/settings.json` (or a project's own `.claude/settings.json
 }
 ```
 
-The hook reads `transcript_path` off the stdin JSON Claude Code sends on `SessionEnd`, runs `sessionxray --summary --fail-on none` against it, and appends one line -- a timestamp, the `SessionEnd` reason (`clear`, `resume`, `logout`, ...), and the grade -- to `~/.claude/sessionxray/history.log`. If `sessionxray` isn't installed as a command, it falls back to running the copy of the package sitting next to the script itself, the same "clone it, no install needed" path the Install section above already documents. Read the log back, newest first:
+That mode ships inside the package, so it needs nothing else and works on Windows too. Running from a clone with nothing installed, set `"command"` to the script in this repo instead: `/path/to/sessionxray/hooks/sessionxray-sessionend.sh`. The script needs bash and `jq`, and it runs the copy of the package sitting next to it, the same "clone it, no install needed" path the Install section above documents.
+
+Either way, the hook reads `transcript_path` off the stdin JSON Claude Code sends on `SessionEnd`, grades that session (its subagents included), and appends one line -- a timestamp, the `SessionEnd` reason (`clear`, `resume`, `logout`, ...), and the grade -- to `~/.claude/sessionxray/history.log`. Read the log back, newest first:
 
 ```bash
 sessionxray --tail
@@ -178,7 +180,7 @@ sessionxray --tail
 
 Be honest about what this is. A `SessionEnd` hook has no decision control in Claude Code -- nothing here can block or undo anything, only log it, and whatever happened in the session already happened by the time this fires. Treat it as a passive audit trail worth spot-checking now and then, not a real-time guardrail. If you want something that stops a bad action before it happens, that's a `PreToolUse` gate, a different kind of hook this repo doesn't build.
 
-If `transcript_path` is missing, empty, or doesn't point at a real file, or if `jq` isn't installed, the hook exits `0` and writes nothing -- it never blocks a session from ending or prints an error into your terminal.
+If `transcript_path` is missing, empty, or doesn't point at a real file, if the log can't be written, or (for the script) if `jq` isn't installed, the hook exits `0` and writes nothing -- it never blocks a session from ending or prints an error into your terminal.
 
 ### Output formats
 
@@ -186,6 +188,7 @@ If `transcript_path` is missing, empty, or doesn't point at a real file, or if `
 - `--json` -- `{"tool", "version", "sessions": [...], "unreadable": [...]}`, full findings per session
 - `--summary` -- one line per session
 - `--tail` -- print the `SessionEnd` hook's history log, newest first; `--tail-limit N` caps it to the N most recent entries
+- `--session-end-hook` -- run as the `SessionEnd` hook itself (see above): read the hook's JSON on stdin, log one line, print nothing
 - `--out PATH` -- write the report to a file instead of stdout
 - `--no-color` -- disable ANSI color (automatic when not a TTY)
 - `--project-root PATH` -- override the inferred project root for every session in this run

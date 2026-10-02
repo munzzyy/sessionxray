@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import posixpath
 import re
 import sys
+import time
 from pathlib import Path
 
 from . import __version__
@@ -14,11 +16,11 @@ from .discovery import _to_posix_path, discover_sessions
 from .finding import Severity
 from .report import parse_grade, render_human, render_json, render_summary, render_watch_line
 from .rules import ALL_RULE_IDS
-from .rules._util import _escape_controls
+from .rules._util import _CONTROL_RE, _escape_controls
 from .scanner import scan_session
 from .watch import run_watch
 
-# Where the SessionEnd hook (hooks/sessionxray-sessionend.sh) appends its
+# Where the SessionEnd hook (--session-end-hook, or hooks/sessionxray-sessionend.sh) appends its
 # one-line-per-session log. Overridable so tests, and anyone with an unusual
 # ~/.claude layout, don't have to touch the real file.
 DEFAULT_HISTORY_LOG = Path.home() / ".claude" / "sessionxray" / "history.log"
@@ -45,8 +47,11 @@ def build_parser() -> argparse.ArgumentParser:
     out.add_argument("--summary", action="store_true",
                       help="one line per session, for triaging a whole directory")
     out.add_argument("--tail", action="store_true",
-                      help="print the SessionEnd hook's history log, newest first, and exit "
-                           "(see hooks/sessionxray-sessionend.sh)")
+                      help="print the SessionEnd hook's history log, newest first, and exit")
+    out.add_argument("--session-end-hook", action="store_true",
+                      help="run as a Claude Code SessionEnd hook: read the hook's JSON on stdin, "
+                           "grade the transcript it names, append one line to the history log, "
+                           "and print nothing")
     out.add_argument("--watch", nargs="?", const=str(Path.home() / ".claude" / "projects"),
                       metavar="DIR",
                       help="poll DIR (default ~/.claude/projects) for new or changed session "
@@ -124,7 +129,7 @@ def _cmd_tail(limit: int) -> int:
     path = _history_log_path()
     if not path.exists():
         print(f"sessionxray: no history log yet at {path} -- "
-              f"wire up hooks/sessionxray-sessionend.sh first (see README)")
+              f"set up the SessionEnd hook first (see README)")
         return 0
     try:
         text = path.read_text(encoding="utf-8")
@@ -146,6 +151,28 @@ def _cmd_tail(limit: int) -> int:
     for ln in lines:
         # Logs written by older hook versions can still hold raw escape codes.
         print(_escape_controls(ln))
+    return 0
+
+
+def _cmd_session_end_hook() -> int:
+    """Append one grade line for the session that just ended. A hook that
+    prints or fails surfaces an error as the session closes, so every failure
+    here is silent and the exit code is always 0."""
+    try:
+        payload = json.loads(sys.stdin.read())
+        transcript = payload.get("transcript_path") if isinstance(payload, dict) else None
+        if not isinstance(transcript, str) or not os.path.isfile(transcript):
+            return 0
+        reason = payload.get("reason")
+        reason = _CONTROL_RE.sub("", reason) if isinstance(reason, str) else ""
+        row = render_summary([scan_session(os.path.abspath(transcript))], color=False).strip()
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        log = _history_log_path()
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write(f"[{stamp}] reason={reason or 'unknown'}  {row}\n")
+    except Exception:
+        pass
     return 0
 
 
@@ -204,6 +231,9 @@ def _misplaced_flag(args):
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.session_end_hook:
+        return _cmd_session_end_hook()
 
     misplaced = _misplaced_flag(args)
     if misplaced:
