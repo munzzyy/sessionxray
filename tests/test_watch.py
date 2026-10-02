@@ -98,6 +98,12 @@ class Poll(unittest.TestCase):
         self.assertEqual(len(expected), 4)
         self.assertEqual(len(poll(self.dir, WatchState())), len(expected))
 
+    def test_subagent_findings_are_reported_once_under_their_own_file(self):
+        shutil.copytree(FIXTURES / "subagents", os.path.join(self.dir, "s"))
+        items = poll(self.dir, WatchState())
+        self.assertEqual(sorted(os.path.basename(p) for p, _f in items),
+                         ["agent-a1.jsonl", "agent-a1.jsonl", "agent-b2.jsonl"])
+
     def test_select_and_ignore_are_honored(self):
         self._copy("secrets.jsonl")
         state = WatchState()

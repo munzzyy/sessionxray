@@ -132,6 +132,14 @@ class SessionEndHook(unittest.TestCase):
         lines = self.log_path.read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(lines), 1, lines)
 
+    def test_a_session_is_graded_with_its_subagents(self):
+        transcript = FIXTURES / "subagents" / "PARENT.jsonl"
+        proc = self._run({"transcript_path": str(transcript), "reason": "clear"})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        line = self.log_path.read_text(encoding="utf-8").strip()
+        self.assertIn("PARENT.jsonl", line)
+        self.assertNotIn("A (", line)
+
     def test_falls_back_to_the_in_repo_copy_when_sessionxray_is_not_on_path(self):
         # No pip install happened for this test; the fallback to `python3 -m
         # sessionxray`, run against the package next to this script, is the

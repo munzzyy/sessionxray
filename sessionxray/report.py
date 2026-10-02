@@ -59,6 +59,8 @@ def _render_one(result: SessionResult, color: bool) -> str:
         meta += f", {result.skipped_lines} unreadable line(s) skipped"
     if result.truncated_results:
         meta += f", {result.truncated_results} oversized result(s) scanned only in part"
+    if result.subagents:
+        meta += f", including {len(result.subagents)} subagent transcript(s)"
     lines.append(meta)
     if result.project_root:
         lines.append(f"  project root: {_e(result.project_root)}")
@@ -85,6 +87,8 @@ def _render_one(result: SessionResult, color: bool) -> str:
                 if f.also_at:
                     more = ", ".join(f"#{i}" for i in f.also_at)
                     loc += f", also at {more}" + (", ..." if f.occurrences - 1 > len(f.also_at) else "")
+                if f.agent_id:
+                    loc += f", in subagent {_e(f.agent_id)}" + _agent_type_note(result, f.agent_id)
                 lines.append(f"           {loc}")
                 lines.append(f"           {_e(f.detail)}")
                 if f.evidence:
@@ -105,6 +109,13 @@ def _render_one(result: SessionResult, color: bool) -> str:
     lines.append(f"  Security grade: {c(gc, result.grade)}  ({result.grade_score}/100)")
     lines.append("")
     return "\n".join(lines)
+
+
+def _agent_type_note(result: SessionResult, agent_id: str) -> str:
+    for sub in result.subagents:
+        if sub.get("agent_id") == agent_id and sub.get("agent_type"):
+            return f" ({_e(sub['agent_type'])})"
+    return ""
 
 
 _GRADE_RANK = {"A": 0, "B": 1, "C": 2, "D": 3, "F": 4}
@@ -197,6 +208,7 @@ def _session_payload(result: SessionResult) -> dict:
         "grade_score": result.grade_score,
         "network_hosts": result.network_hosts,
         "counts": {s.label: result.counts()[s] for s in Severity},
+        "subagents": [dict(sub) for sub in result.subagents],
         "findings": [
             {
                 "rule_id": f.rule_id,
@@ -210,6 +222,7 @@ def _session_payload(result: SessionResult) -> dict:
                 "remediation": f.remediation,
                 "occurrences": f.occurrences,
                 "also_at": list(f.also_at),
+                "agent_id": f.agent_id,
             }
             for f in result.findings
         ],

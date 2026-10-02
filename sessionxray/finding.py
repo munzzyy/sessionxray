@@ -55,10 +55,11 @@ class Finding:
     remediation: str = ""
     occurrences: int = 1  # how many events produced this exact (rule, title, evidence)
     also_at: tuple = ()  # a few more event indices it also happened at, if occurrences > 1
+    agent_id: str = ""  # the subagent transcript event_index points into; "" = the session's own
 
     def sort_key(self):
         # Worst first, then by location for stable output.
-        return (-int(self.severity), self.category.value, self.event_index)
+        return (-int(self.severity), self.category.value, self.agent_id, self.event_index)
 
 
 @dataclass
@@ -76,6 +77,7 @@ class SessionResult:
     last_ts: Optional[str] = None
     grade: str = "A"
     grade_score: int = 100
+    subagents: list = field(default_factory=list)  # list[dict]: agent_id, agent_type, path
 
     def counts(self) -> dict:
         out = {s: 0 for s in Severity}

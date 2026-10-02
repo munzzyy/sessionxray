@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 
-from .discovery import discover_sessions, parse_session
+from .discovery import NO_HOME, discover_sessions, parse_session, subagent_transcripts, subagent_type
 from .finding import SessionResult
 from .grade import grade
 from .rules import run_all
@@ -54,11 +54,41 @@ def _filter_by_rule(findings: list, select, ignore) -> list:
     return findings
 
 
-def scan_session(path, project_root_override=None, select=None, ignore=None) -> SessionResult:
+def scan_session(path, project_root_override=None, select=None, ignore=None,
+                 include_subagents=True) -> SessionResult:
+    """Scan one transcript and, unless told not to, the subagent transcripts
+    stored beside it. Each subagent is parsed on its own so its event indices
+    and root inference stay its own; its findings join the session's grade."""
     parsed = parse_session(path)
     if project_root_override:
         parsed.project_root = project_root_override
     findings = _collapse_repeats(run_all(parsed))
+    hosts = set(network.contacted_hosts(parsed))
+    event_count = parsed.event_count
+    tool_call_count = len(parsed.tool_calls)
+    skipped = parsed.skipped_lines
+    truncated = parsed.truncated_results
+    subagents = []
+
+    for sub_path in (subagent_transcripts(path) if include_subagents else []):
+        try:
+            sub = parse_session(sub_path)
+        except OSError:
+            continue
+        sub.project_root = project_root_override or sub.project_root or parsed.project_root
+        if sub.home == NO_HOME:
+            sub.home = parsed.home
+        agent_id = sub.agent_id or sub_path.stem[len("agent-"):]
+        findings.extend(dataclasses.replace(f, agent_id=agent_id)
+                        for f in _collapse_repeats(run_all(sub)))
+        hosts.update(network.contacted_hosts(sub))
+        event_count += sub.event_count
+        tool_call_count += len(sub.tool_calls)
+        skipped += sub.skipped_lines
+        truncated += sub.truncated_results
+        subagents.append({"agent_id": agent_id, "agent_type": subagent_type(sub_path),
+                          "path": str(sub_path)})
+
     findings = _filter_by_rule(findings, select, ignore)
     findings.sort(key=lambda f: f.sort_key())
     g, score = grade(findings)
@@ -67,15 +97,16 @@ def scan_session(path, project_root_override=None, select=None, ignore=None) -> 
         session_id=parsed.session_id,
         project_root=parsed.project_root,
         findings=findings,
-        network_hosts=network.contacted_hosts(parsed),
-        event_count=parsed.event_count,
-        tool_call_count=len(parsed.tool_calls),
-        skipped_lines=parsed.skipped_lines,
-        truncated_results=parsed.truncated_results,
+        network_hosts=sorted(hosts),
+        event_count=event_count,
+        tool_call_count=tool_call_count,
+        skipped_lines=skipped,
+        truncated_results=truncated,
         first_ts=parsed.first_ts,
         last_ts=parsed.last_ts,
         grade=g,
         grade_score=score,
+        subagents=subagents,
     )
 
 

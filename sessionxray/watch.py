@@ -64,7 +64,10 @@ def poll(directory, state: WatchState, project_root_override=None, select=None, 
         state.stamps[path] = stamp
 
         try:
-            result = scan_session(path, project_root_override, select=select, ignore=ignore)
+            # Every agent-*.jsonl is polled as a file of its own, so folding
+            # subagents into their parent here would report them twice.
+            result = scan_session(path, project_root_override, select=select, ignore=ignore,
+                                  include_subagents=False)
         except OSError:
             continue
 

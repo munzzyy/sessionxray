@@ -184,6 +184,95 @@ class ControlBytesInTranscriptFields(unittest.TestCase):
         self.assertEqual(payload["sessions"][0]["session_id"], "S\x1b]0;pwned\x07\x1b[2J\n[forged] A")
 
 
+SUBAGENTS = FIXTURES / "subagents"
+
+
+class Subagents(unittest.TestCase):
+    """Claude Code writes a subagent's tool calls to <session>/subagents/,
+    not to the parent transcript, so the parent's grade has to include them."""
+
+    def _copy_tree(self):
+        tmp = Path(tempfile.mkdtemp(prefix="sxr-sub-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        shutil.copytree(SUBAGENTS, tmp / "subagents")
+        return tmp / "subagents"
+
+    def _run(self, argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = cli.main(argv)
+        return code, out.getvalue()
+
+    def test_parent_grade_includes_the_subagents_findings(self):
+        r = scan_session(SUBAGENTS / "PARENT.jsonl")
+        hits = [f for f in r.findings if f.rule_id == "SXR-003" and f.agent_id == "a1"]
+        self.assertEqual([f.severity for f in hits], [Severity.HIGH])
+        self.assertIn(r.grade, ("C", "D", "F"))
+
+    def test_nested_workflow_subagents_are_scanned(self):
+        r = scan_session(SUBAGENTS / "PARENT.jsonl")
+        self.assertIn("b2", {f.agent_id for f in r.findings})
+        self.assertEqual([s["agent_id"] for s in r.subagents], ["a1", "b2"])
+
+    def test_json_names_the_agent_and_keeps_every_existing_key(self):
+        code, out = self._run([str(SUBAGENTS / "PARENT.jsonl"), "--json", "--fail-on", "none"])
+        self.assertEqual(code, 0)
+        session = json.loads(out)["sessions"][0]
+        a1 = [f for f in session["findings"] if f["rule_id"] == "SXR-003"]
+        self.assertEqual([f["agent_id"] for f in a1], ["a1"])
+        self.assertEqual(session["subagents"][0]["agent_type"], "general-purpose")
+        code, out = self._run([str(FIXTURES / "malicious" / "secrets.jsonl"), "--json", "--fail-on", "none"])
+        findings = json.loads(out)["sessions"][0]["findings"]
+        self.assertTrue(findings)
+        old_keys = {"rule_id", "category", "severity", "title", "detail", "evidence", "event_index",
+                    "tool_name", "remediation", "occurrences", "also_at"}
+        for f in findings:
+            self.assertEqual(set(f), old_keys | {"agent_id"})
+            self.assertEqual(f["agent_id"], "")
+
+    def test_human_report_says_which_subagent(self):
+        code, out = self._run([str(SUBAGENTS / "PARENT.jsonl"), "--no-color", "--fail-on", "none"])
+        self.assertIn("in subagent a1 (general-purpose)", out)
+        self.assertIn("including 2 subagent transcript(s)", out)
+
+    def test_summary_of_the_tree_is_one_row(self):
+        code, out = self._run(["--summary", str(SUBAGENTS), "--no-color", "--fail-on", "none"])
+        self.assertEqual(code, 0)
+        rows = [ln for ln in out.splitlines() if ln.strip()]
+        self.assertEqual(len(rows), 1, rows)
+        self.assertTrue(rows[0].endswith("PARENT.jsonl"))
+
+    def test_a_subagent_file_named_on_its_own_is_scanned_on_its_own(self):
+        agent = SUBAGENTS / "PARENT" / "subagents" / "agent-a1.jsonl"
+        code, out = self._run([str(agent), "--json", "--fail-on", "none"])
+        session = json.loads(out)["sessions"][0]
+        self.assertTrue(session["path"].endswith("agent-a1.jsonl"))
+        self.assertIn("SXR-003", {f["rule_id"] for f in session["findings"]})
+
+    def test_malformed_meta_json_still_scans_the_agent(self):
+        root = self._copy_tree()
+        (root / "PARENT" / "subagents" / "agent-a1.meta.json").write_text("{not json", encoding="utf-8")
+        r = scan_session(root / "PARENT.jsonl")
+        self.assertIn("a1", {f.agent_id for f in r.findings})
+        self.assertEqual(r.subagents[0]["agent_type"], "")
+
+    @unittest.skipIf(sys.platform == "win32" or getattr(os, "geteuid", lambda: 0)() == 0,
+                     "needs POSIX permissions and a non-root user")
+    def test_an_unreadable_agent_file_is_skipped(self):
+        root = self._copy_tree()
+        agent = root / "PARENT" / "subagents" / "agent-a1.jsonl"
+        os.chmod(agent, 0)
+        self.addCleanup(os.chmod, agent, 0o644)
+        r = scan_session(root / "PARENT.jsonl")
+        self.assertEqual({f.agent_id for f in r.findings}, {"b2"})
+
+    def test_a_missing_subagents_dir_is_just_the_parent(self):
+        root = self._copy_tree()
+        shutil.rmtree(root / "PARENT")
+        r = scan_session(root / "PARENT.jsonl")
+        self.assertEqual((r.findings, r.subagents, r.grade), ([], [], "A"))
+
+
 class CLI(unittest.TestCase):
     def _run(self, argv):
         out = io.StringIO()

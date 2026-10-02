@@ -71,11 +71,47 @@ class ParsedSession:
     home: str = NO_HOME  # the recorded machine's home dir, inferred from the transcript
     first_ts: Optional[str] = None
     last_ts: Optional[str] = None
+    agent_id: str = ""  # set when the transcript is a subagent's (agentId on its events)
+
+
+def subagent_transcripts(path) -> list:
+    """The subagent transcripts that belong to the session at `path`.
+
+    Claude Code writes a subagent's tool calls to agent-*.jsonl under
+    `<session-id>/subagents/` next to the session's own `<session-id>.jsonl`,
+    or one level deeper under `subagents/workflows/<workflow>/`, and not to the
+    parent transcript. The layout is undocumented, so a missing or unreadable
+    directory just means no subagents."""
+    path = Path(path)
+    sub_dir = path.with_suffix("") / "subagents"
+    if not path.name.lower().endswith(".jsonl") or not sub_dir.is_dir():
+        return []
+    found = []
+    for dirpath, _dirnames, filenames in os.walk(sub_dir):
+        for fn in filenames:
+            if fn.startswith("agent-") and fn.lower().endswith(".jsonl"):
+                found.append(Path(dirpath) / fn)
+    return sorted(found)
+
+
+def subagent_type(path) -> str:
+    """agentType from the agent-*.meta.json beside a subagent transcript, or ""."""
+    meta = Path(path).with_suffix(".meta.json")
+    try:
+        with open(meta, "rb") as fh:
+            data = json.loads(fh.read(65536).decode("utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return ""
+    value = data.get("agentType") if isinstance(data, dict) else None
+    return value if isinstance(value, str) else ""
 
 
 def discover_sessions(targets) -> list:
     """Resolve one or more CLI targets (file, glob, or directory) to a sorted,
-    deduplicated list of .jsonl paths. Directories are walked recursively."""
+    deduplicated list of .jsonl paths. Directories are walked recursively.
+
+    A subagent transcript is dropped when its parent session is also in the
+    list, because scanning the parent scans it too. On its own it stays."""
     import glob as globmod
 
     found: set = set()
@@ -94,7 +130,8 @@ def discover_sessions(targets) -> list:
             continue
         if os.path.isfile(t):
             found.add(os.path.abspath(t))
-    return [Path(p) for p in sorted(found)]
+    owned = {os.path.abspath(sub) for p in found for sub in subagent_transcripts(p)}
+    return [Path(p) for p in sorted(found - owned)]
 
 
 def parse_session(path) -> ParsedSession:
@@ -104,6 +141,7 @@ def parse_session(path) -> ParsedSession:
     cwd_counts: dict = {}
     first_ts = last_ts = None
     session_id = ""
+    agent_id = ""
     event_count = 0
     skipped = 0
 
@@ -138,6 +176,9 @@ def parse_session(path) -> ParsedSession:
             sid = event.get("sessionId")
             if not session_id and isinstance(sid, str) and sid:
                 session_id = sid
+            aid = event.get("agentId")
+            if not agent_id and isinstance(aid, str) and aid:
+                agent_id = aid
 
     if not session_id:
         session_id = path.stem
@@ -155,6 +196,7 @@ def parse_session(path) -> ParsedSession:
         home=infer_home(cwd_counts, tool_calls),
         first_ts=first_ts,
         last_ts=last_ts,
+        agent_id=agent_id,
     )
 
 

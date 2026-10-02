@@ -94,6 +94,8 @@ sessionxray ~/.claude/projects --summary                     # one line per sess
 
 Point it at the JSONL files Claude Code already writes under `~/.claude/projects/<project-slug>/`. Nothing is fetched, executed, or sent anywhere -- see [Privacy](#privacy).
 
+Subagents don't write to their parent's transcript. Claude Code puts each one's tool calls in its own `agent-*.jsonl` under `<session-id>/subagents/`, next to the session's `<session-id>.jsonl`. Scanning a session scans those with it: their findings count toward the session's grade and say which subagent they came from, and a directory walk doesn't list them again as sessions of their own. Name an `agent-*.jsonl` file directly to scan just that subagent.
+
 ### Fleet triage
 
 `--summary` collapses each session to one line: grade, score, severity counts, when it happened, and where it lives. Worst session first, so the one worth reading closely is at the top of a `~/.claude/projects` tree with a thousand sessions in it:
