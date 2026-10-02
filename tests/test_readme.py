@@ -10,6 +10,7 @@ import re
 import unittest
 from pathlib import Path
 
+from sessionxray import __version__
 from sessionxray.report import render_summary
 from sessionxray.scanner import scan_session
 
@@ -99,6 +100,15 @@ class InstallInstructions(unittest.TestCase):
     def test_no_reference_to_the_deleted_noslop_package(self):
         for path in [README, ROOT / "CONTRIBUTING.md", ROOT / ".github" / "workflows" / "ci.yml"]:
             self.assertNotIn("noslop", path.read_text(encoding="utf-8").lower(), str(path))
+
+
+class PackageMetadata(unittest.TestCase):
+    def test_pyproject_version_matches_the_package(self):
+        # A regex, because tomllib is 3.11+ and CI still runs 3.9.
+        text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
+        self.assertIsNotNone(m, "no version line in pyproject.toml")
+        self.assertEqual(m.group(1), __version__)
 
 
 if __name__ == "__main__":

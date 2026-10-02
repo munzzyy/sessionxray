@@ -19,9 +19,10 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
+
+from tests._helpers import temp_dir
 
 REPO_ROOT = Path(__file__).parent.parent
 SCRIPT = REPO_ROOT / "hooks" / "sessionxray-sessionend.sh"
@@ -38,7 +39,7 @@ LINE_BREAKS = ("\n", "\x1c", "\x85", "\u2028", "\u2029")
                       "bash and jq required to exercise the real hook script (not on native Windows)")
 class SessionEndHook(unittest.TestCase):
     def setUp(self):
-        self._tmpdir = Path(tempfile.mkdtemp(prefix="sxr-hook-test-"))
+        self._tmpdir = temp_dir("sxr-hook-test-")
         self.log_path = self._tmpdir / "history.log"
 
     def _run(self, payload: dict, **extra_env) -> subprocess.CompletedProcess:
@@ -183,7 +184,7 @@ class BuiltInHook(unittest.TestCase):
     LINE_RE = re.compile(r"^\[\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\] reason=clear  F ")
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="sxr-builtin-hook-"))
+        self.tmp = temp_dir("sxr-builtin-hook-")
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.log_path = self.tmp / "history.log"
 
@@ -258,7 +259,7 @@ class BuiltInHook(unittest.TestCase):
 @unittest.skipUnless(_HAVE_BASH and _POSIX_ENOUGH, "bash required to exercise the real hook script (not on native Windows)")
 class NoJq(unittest.TestCase):
     def test_no_jq_is_a_quiet_noop(self):
-        tmpdir = Path(tempfile.mkdtemp(prefix="sxr-hook-nojq-"))
+        tmpdir = temp_dir("sxr-hook-nojq-")
         log_path = tmpdir / "history.log"
         # Build a PATH with no jq on it at all, so `command -v jq` fails
         # inside the script regardless of what the host machine has.

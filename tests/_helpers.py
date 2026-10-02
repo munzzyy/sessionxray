@@ -4,7 +4,9 @@ scan it, without needing a fixture file on disk for every small unit test.
 
 from __future__ import annotations
 
+import atexit
 import json
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -50,9 +52,20 @@ def result_event(idx, tool_use_id, text=None, stdout=None, cwd=DEFAULT_ROOT):
     return event
 
 
+_temp_root = None
+
+
+def temp_dir(prefix="sxr-test-") -> Path:
+    """A new directory under one per-run root, removed when the test process exits."""
+    global _temp_root
+    if _temp_root is None:
+        _temp_root = tempfile.mkdtemp(prefix="sxr-tests-")
+        atexit.register(shutil.rmtree, _temp_root, ignore_errors=True)
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=_temp_root))
+
+
 def write_session(events: list) -> Path:
-    tmp = tempfile.mkdtemp(prefix="sxr-test-")
-    path = Path(tmp) / "session.jsonl"
+    path = temp_dir() / "session.jsonl"
     with open(path, "w", encoding="utf-8") as fh:
         for e in events:
             if isinstance(e, str):

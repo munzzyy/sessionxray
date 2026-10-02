@@ -17,7 +17,7 @@ from sessionxray.finding import Category, Finding, Severity
 from sessionxray.grade import grade
 from sessionxray.report import render_human, render_json, render_summary, render_watch_line
 from sessionxray.scanner import scan_session
-from tests._helpers import assistant_event, result_event, write_session
+from tests._helpers import assistant_event, result_event, temp_dir, write_session
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -193,7 +193,7 @@ class Subagents(unittest.TestCase):
     not to the parent transcript, so the parent's grade has to include them."""
 
     def _copy_tree(self):
-        tmp = Path(tempfile.mkdtemp(prefix="sxr-sub-"))
+        tmp = temp_dir("sxr-sub-")
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         shutil.copytree(SUBAGENTS, tmp / "subagents")
         return tmp / "subagents"
@@ -321,14 +321,14 @@ class CLI(unittest.TestCase):
         self.assertEqual(code, 0)
 
     def test_unreadable_transcript_summary_flags_skipped(self):
-        tmp = Path(tempfile.mkdtemp()) / "notjson.jsonl"
+        tmp = temp_dir() / "notjson.jsonl"
         tmp.write_text("this is not json at all\nneither is this\n", encoding="utf-8")
         code, out = self._run([str(tmp), "--summary", "--no-color", "--fail-on", "none"])
         self.assertEqual(code, 0)
         self.assertIn("unreadable", out)
 
     def test_unreadable_transcript_emits_integrity_finding(self):
-        tmp = Path(tempfile.mkdtemp()) / "notjson.jsonl"
+        tmp = temp_dir() / "notjson.jsonl"
         tmp.write_text("garbage one\ngarbage two\n", encoding="utf-8")
         code, out = self._run([str(tmp), "--json", "--fail-on", "none"])
         payload = json.loads(out)
@@ -388,7 +388,7 @@ class CLI(unittest.TestCase):
         self.assertEqual(len(lines), len(list((FIXTURES / "malicious").glob("*.jsonl"))))
 
     def test_out_file_receives_the_report(self):
-        tmp_out = Path(tempfile.mkdtemp()) / "report.txt"
+        tmp_out = temp_dir() / "report.txt"
         code, printed = self._run([str(FIXTURES / "benign" / "benign-session.jsonl"),
                                     "--out", str(tmp_out), "--fail-on", "none"])
         self.assertEqual(code, 0)
@@ -437,7 +437,7 @@ class FleetRobustness(unittest.TestCase):
     can't, and exits 2 for them unless --fail-on already tripped."""
 
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp(prefix="sxr-fleet-"))
+        self.dir = temp_dir("sxr-fleet-")
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
         for name in ("a.jsonl", "b.jsonl"):
             shutil.copy(FIXTURES / "benign" / "benign-session.jsonl", self.dir / name)
@@ -633,13 +633,13 @@ class Tail(unittest.TestCase):
         return code, out.getvalue()
 
     def test_missing_log_is_not_an_error(self):
-        log_path = Path(tempfile.mkdtemp()) / "no-such-history.log"
+        log_path = temp_dir() / "no-such-history.log"
         code, out = self._run(["--tail"], log_path)
         self.assertEqual(code, 0)
         self.assertIn("no history log yet", out)
 
     def test_newest_first(self):
-        log_path = Path(tempfile.mkdtemp()) / "history.log"
+        log_path = temp_dir() / "history.log"
         log_path.write_text(
             "[2026-07-10T09:00:00Z] reason=clear    A (100/100)  clean  0 total  first\n"
             "[2026-07-10T09:01:00Z] reason=resume   F (  0/100)  1 critical  1 total  second\n"
@@ -655,7 +655,7 @@ class Tail(unittest.TestCase):
         self.assertTrue(lines[2].endswith("first"))
 
     def test_tail_limit(self):
-        log_path = Path(tempfile.mkdtemp()) / "history.log"
+        log_path = temp_dir() / "history.log"
         log_path.write_text("".join(f"line-{i}\n" for i in range(5)), encoding="utf-8")
         code, out = self._run(["--tail", "--tail-limit", "2"], log_path)
         self.assertEqual(code, 0)
@@ -663,7 +663,7 @@ class Tail(unittest.TestCase):
         self.assertEqual(lines, ["line-4", "line-3"])
 
     def test_a_line_separator_inside_an_entry_does_not_split_it(self):
-        tmp = Path(tempfile.mkdtemp(prefix="sxr-tail-"))
+        tmp = temp_dir("sxr-tail-")
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         log_path = tmp / "history.log"
         log_path.write_text("[2026-07-10T09:00:00Z] reason=clear  F (  0/100)  S1"
@@ -676,7 +676,7 @@ class Tail(unittest.TestCase):
         self.assertNotIn("\u2028", out)
 
     def test_empty_log_says_so(self):
-        log_path = Path(tempfile.mkdtemp()) / "history.log"
+        log_path = temp_dir() / "history.log"
         log_path.write_text("", encoding="utf-8")
         code, out = self._run(["--tail"], log_path)
         self.assertEqual(code, 0)

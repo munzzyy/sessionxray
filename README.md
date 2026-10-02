@@ -238,7 +238,7 @@ One unreadable file does not stop a scan. The other sessions are still scanned a
 These are the open items a patch cannot close.
 
 - v0.2.0. The last tag is v0.1.0 from August. Everything since then is only on `main` until it is tagged: `--select`/`--ignore`, `--watch`, subagent scanning, `--session-end-hook` and the rule fixes. [SECURITY.md](SECURITY.md) promises fixes on the latest tagged version. The pipx line in Install builds from `main` and already has all of it.
-- The Python floor. CI tests 3.9, 3.11, 3.12 and 3.13. GitHub moves its `ubuntu-latest` runner to a new Ubuntu image starting October 19, 2026, and if 3.9 is not available there the floor has to be decided on purpose.
+- The Python floor. CI tests 3.9, 3.11, 3.12, 3.13 and 3.14. GitHub moves its `ubuntu-latest` runner to a new Ubuntu image starting October 19, 2026, and if 3.9 is not available there the floor has to be decided on purpose.
 - Reports from other Claude Code versions. Subagent transcripts under `<session-id>/subagents/` are an undocumented layout and have been checked against one Claude Code version so far. If the subagents of a session do not show up in its report, open an issue with your Claude Code version and the file names in that directory. The names are enough; leave the contents out.
 
 ## Contributing

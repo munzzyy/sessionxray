@@ -2,12 +2,11 @@
 ToolCall/ToolResultText, and finding session files on disk."""
 
 import json
-import tempfile
 import unittest
 from pathlib import Path
 
 from sessionxray.discovery import MAX_RESULT_TEXT, discover_sessions, parse_session
-from tests._helpers import DEFAULT_ROOT, assistant_event, result_event, write_session
+from tests._helpers import DEFAULT_ROOT, assistant_event, result_event, temp_dir, write_session
 
 
 class ParseToolCalls(unittest.TestCase):
@@ -118,7 +117,7 @@ class MalformedLines(unittest.TestCase):
         self.assertEqual(parsed.tool_calls, [])
 
     def test_session_id_falls_back_to_filename(self):
-        tmp = Path(tempfile.mkdtemp())
+        tmp = temp_dir()
         path = tmp / "abc123.jsonl"
         event = {"type": "assistant", "message": {"role": "assistant",
                  "content": [{"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": "x"}}]}}
@@ -168,7 +167,7 @@ class Discovery(unittest.TestCase):
         self.assertEqual(Path(found[0]).name, path.name)
 
     def test_directory_is_walked_recursively(self):
-        tmp = Path(tempfile.mkdtemp())
+        tmp = temp_dir()
         (tmp / "sub").mkdir()
         (tmp / "a.jsonl").write_text("{}\n", encoding="utf-8")
         (tmp / "sub" / "b.jsonl").write_text("{}\n", encoding="utf-8")
@@ -177,7 +176,7 @@ class Discovery(unittest.TestCase):
         self.assertEqual(len(found), 2)
 
     def test_glob_target(self):
-        tmp = Path(tempfile.mkdtemp())
+        tmp = temp_dir()
         (tmp / "one.jsonl").write_text("{}\n", encoding="utf-8")
         (tmp / "two.jsonl").write_text("{}\n", encoding="utf-8")
         found = discover_sessions([str(tmp / "*.jsonl")])
