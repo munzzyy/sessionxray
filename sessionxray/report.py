@@ -184,11 +184,12 @@ def render_watch_line(path: str, finding, color: bool = True) -> str:
     return f"[{tag}] {finding.rule_id} {_e(finding.title)} -- {_e(path)} (event #{finding.event_index})"
 
 
-def render_json(results: list) -> str:
+def render_json(results: list, unreadable=None) -> str:
     payload = {
         "tool": "sessionxray",
         "version": __version__,
         "sessions": [_session_payload(r) for r in results],
+        "unreadable": [dict(u) for u in (unreadable or [])],
     }
     return json.dumps(payload, indent=2)
 

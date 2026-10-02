@@ -52,15 +52,15 @@ def build_parser() -> argparse.ArgumentParser:
                       help="poll DIR (default ~/.claude/projects) for new or changed session "
                            "files and print only findings new since the last poll, until "
                            "interrupted -- a live guardrail instead of an after-the-fact read")
-    p.add_argument("--tail-limit", type=int, default=0, metavar="N",
+    p.add_argument("--tail-limit", type=int, default=None, metavar="N",
                    help="with --tail, show only the N most recent entries (default: all)")
-    p.add_argument("--sort", choices=("severity", "path"), default="severity",
+    p.add_argument("--sort", choices=("severity", "path"), default=None,
                    help="with --summary, row order: worst session first (default) or by file path")
     p.add_argument("--min-grade", metavar="LETTER",
                    help="with --summary, show only sessions graded LETTER or worse "
                         "(A|B|C|D|F). Does not change the --fail-on exit code, which "
                         "still considers every session scanned")
-    p.add_argument("--fail-on", default="high", metavar="SEVERITY",
+    p.add_argument("--fail-on", default=None, metavar="SEVERITY",
                    help="exit non-zero if any finding is at or above this severity "
                         "(critical|high|medium|low|info|none; default: high)")
     p.add_argument("--select", metavar="RULE[,RULE...]",
@@ -69,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="never report findings from these rule IDs, e.g. SXR-004")
     p.add_argument("--out", metavar="PATH", help="write the report to this file instead of stdout")
     p.add_argument("--no-color", action="store_true", help="disable ANSI color")
-    p.add_argument("--watch-interval", type=float, default=2.0, metavar="SECONDS",
+    p.add_argument("--watch-interval", type=float, default=None, metavar="SECONDS",
                    help="with --watch, seconds between polls (default: 2.0)")
     p.add_argument("--watch-max-cycles", type=int, default=None, metavar="N",
                    help="with --watch, stop after N polls instead of running forever "
@@ -179,11 +179,39 @@ def _print_gate_trip(results: list, threshold) -> None:
               f"({finding.rule_id} {finding.title!r}, severity {worst.label})", file=sys.stderr)
 
 
+def _misplaced_flag(args):
+    """The first flag given for a mode this run isn't in, as a usage message,
+    or None. Ignoring one silently hides a mistyped command line."""
+    watching = args.watch is not None
+    if args.tail_limit is not None and not args.tail:
+        return "--tail-limit only applies to --tail"
+    if args.sort is not None and not args.summary:
+        return "--sort only applies to --summary"
+    if args.min_grade is not None and not args.summary:
+        return "--min-grade only applies to --summary"
+    if not watching and (args.watch_interval is not None or args.watch_max_cycles is not None):
+        return "--watch-interval and --watch-max-cycles only apply to --watch"
+    if watching and args.out:
+        return "--out does not apply to --watch, which prints findings as it finds them"
+    if watching and args.fail_on is not None:
+        return "--fail-on does not apply to --watch, which never exits on a finding"
+    if watching and args.watch_interval is not None and args.watch_interval < 0:
+        return f"--watch-interval must be zero or more (got {args.watch_interval:g})"
+    if watching and args.watch_max_cycles is not None and args.watch_max_cycles < 0:
+        return f"--watch-max-cycles must be zero or more (got {args.watch_max_cycles})"
+    return None
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
 
+    misplaced = _misplaced_flag(args)
+    if misplaced:
+        print(f"sessionxray: {misplaced}", file=sys.stderr)
+        return 2
+
     if args.tail:
-        return _cmd_tail(args.tail_limit)
+        return _cmd_tail(args.tail_limit or 0)
 
     try:
         select = _parse_rule_list(args.select, "--select") if args.select else None
@@ -206,7 +234,8 @@ def main(argv=None) -> int:
                       file=sys.stderr)
                 return 2
         color = not args.no_color and sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
-        return _cmd_watch(args.watch, args.watch_interval, args.watch_max_cycles,
+        interval = 2.0 if args.watch_interval is None else args.watch_interval
+        return _cmd_watch(args.watch, interval, args.watch_max_cycles,
                            project_root, select, ignore, color)
 
     if not args.targets:
@@ -214,17 +243,15 @@ def main(argv=None) -> int:
               "or --watch to tail a directory live)", file=sys.stderr)
         return 2
 
+    fail_on = "high" if args.fail_on is None else args.fail_on
     try:
-        threshold = _fail_threshold(args.fail_on)
+        threshold = _fail_threshold(fail_on)
     except ValueError:
         print(f"sessionxray: invalid --fail-on value {args.fail_on!r}", file=sys.stderr)
         return 2
 
     min_grade = ""
     if args.min_grade is not None:
-        if not args.summary:
-            print("sessionxray: --min-grade only applies to --summary", file=sys.stderr)
-            return 2
         try:
             min_grade = parse_grade(args.min_grade)
         except ValueError:
@@ -252,17 +279,24 @@ def main(argv=None) -> int:
         print("sessionxray: no .jsonl session files found in the given target(s)", file=sys.stderr)
         return 2
 
-    try:
-        results = [scan_session(p, project_root, select=select, ignore=ignore) for p in paths]
-    except OSError as e:
-        print(f"sessionxray: {e}", file=sys.stderr)
-        return 2
+    # One unreadable file must not hide every other session in a fleet scan.
+    results, unreadable = [], []
+    for p in paths:
+        try:
+            results.append(scan_session(p, project_root, select=select, ignore=ignore))
+        except OSError as e:
+            reason = e.strerror or str(e)
+            unreadable.append({"path": str(p), "error": reason})
+            print(f"sessionxray: could not read {_escape_controls(str(p))}: {reason}", file=sys.stderr)
 
     color = not args.no_color and not args.out and sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
     if args.json:
-        output = render_json(results)
+        output = render_json(results, unreadable)
+    elif not results:
+        output = ""  # every target failed to read, and stderr already says why
     elif args.summary:
-        output = render_summary(results, color=color, sort=args.sort, min_grade=min_grade)
+        output = render_summary(results, color=color, sort=args.sort or "severity",
+                                min_grade=min_grade)
     else:
         output = render_human(results, color=color)
 
@@ -273,7 +307,7 @@ def main(argv=None) -> int:
         except OSError as e:
             print(f"sessionxray: could not write --out file: {e}", file=sys.stderr)
             return 2
-    else:
+    elif output:
         print(output)
 
     if threshold is not None:
@@ -282,7 +316,7 @@ def main(argv=None) -> int:
             if args.json or args.summary:
                 _print_gate_trip(results, threshold)
             return 1
-    return 0
+    return 2 if unreadable else 0
 
 
 if __name__ == "__main__":

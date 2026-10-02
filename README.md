@@ -183,7 +183,7 @@ If `transcript_path` is missing, empty, or doesn't point at a real file, or if `
 ### Output formats
 
 - default -- colored human report, one block per session
-- `--json` -- `{"tool", "version", "sessions": [...]}`, full findings per session
+- `--json` -- `{"tool", "version", "sessions": [...], "unreadable": [...]}`, full findings per session
 - `--summary` -- one line per session
 - `--tail` -- print the `SessionEnd` hook's history log, newest first; `--tail-limit N` caps it to the N most recent entries
 - `--out PATH` -- write the report to a file instead of stdout
@@ -224,9 +224,11 @@ Everything runs locally against files already on disk. sessionxray makes no netw
 
 ## Exit codes
 
-- `0` -- nothing at or above `--fail-on` (default `high`) in any scanned session; also the normal result of `--tail`
-- `1` -- something at or above `--fail-on` was found
-- `2` -- usage error: a target didn't resolve to any `.jsonl` file, an argument was invalid, or (with `--tail`) the history log exists but couldn't be read
+- `0` -- nothing at or above `--fail-on` (default `high`) in any scanned session, and every session file could be read; also the normal result of `--tail`
+- `1` -- something at or above `--fail-on` was found. This wins over `2`: a fleet scan that trips the gate exits 1 even when one of its files was unreadable.
+- `2` -- usage error: a target didn't resolve to any `.jsonl` file, an argument was invalid, a flag was given for a mode it does not apply to (`--sort` without `--summary`, say), a session file could not be read, or (with `--tail`) the history log exists but couldn't be read
+
+One unreadable file does not stop a scan. The other sessions are still scanned and reported. Each unreadable file is named on stderr, and `--json` lists them under `unreadable` with the error.
 
 ## Contributing
 

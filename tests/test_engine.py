@@ -428,6 +428,111 @@ class CLI(unittest.TestCase):
         self.assertEqual(code, 2)
 
 
+_NO_POSIX_PERMS = sys.platform == "win32" or getattr(os, "geteuid", lambda: 0)() == 0
+
+
+class FleetRobustness(unittest.TestCase):
+    """A fleet scan reports every session it can read, names the ones it
+    can't, and exits 2 for them unless --fail-on already tripped."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="sxr-fleet-"))
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        for name in ("a.jsonl", "b.jsonl"):
+            shutil.copy(FIXTURES / "benign" / "benign-session.jsonl", self.dir / name)
+
+    def _run(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def _break(self, how):
+        if how == "chmod":
+            bad = self.dir / "c.jsonl"
+            shutil.copy(FIXTURES / "benign" / "benign-session.jsonl", bad)
+            os.chmod(bad, 0)
+            self.addCleanup(os.chmod, bad, 0o644)
+        else:
+            bad = self.dir / "e.jsonl"
+            try:
+                os.symlink(self.dir / "gone.jsonl", bad)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unsupported here")
+        return bad
+
+    def _unbreak(self, bad, how):
+        if how == "chmod":
+            os.chmod(bad, 0o644)
+        else:
+            os.unlink(bad)
+
+    def _cases(self):
+        cases = ["symlink"]
+        if not _NO_POSIX_PERMS:
+            cases.append("chmod")
+        return cases
+
+    def test_unreadable_file_is_named_and_the_rest_still_report(self):
+        for how in self._cases():
+            with self.subTest(how=how):
+                bad = self._break(how)
+                code, out, err = self._run(["--summary", str(self.dir), "--no-color", "--fail-on", "none"])
+                self.assertEqual(code, 2)
+                self.assertEqual(len([ln for ln in out.splitlines() if ln.strip()]), 2, out)
+                self.assertIn(bad.name, err)
+                self.assertNotIn("Traceback", err)
+                self._unbreak(bad, how)
+
+    def test_a_tripped_gate_still_exits_one(self):
+        for how in self._cases():
+            with self.subTest(how=how):
+                bad = self._break(how)
+                shutil.copy(FIXTURES / "malicious" / "secrets.jsonl", self.dir / "d.jsonl")
+                code, _out, _err = self._run(["--summary", str(self.dir), "--no-color"])
+                self.assertEqual(code, 1)
+                self._unbreak(bad, how)
+                os.unlink(self.dir / "d.jsonl")
+
+    def test_json_lists_the_unreadable_files(self):
+        bad = self._break("symlink")
+        code, out, _err = self._run([str(self.dir), "--json", "--fail-on", "none"])
+        payload = json.loads(out)
+        self.assertEqual(code, 2)
+        self.assertEqual(len(payload["sessions"]), 2)
+        self.assertEqual([Path(u["path"]).name for u in payload["unreadable"]], [bad.name])
+        self.assertTrue(payload["unreadable"][0]["error"])
+
+    def test_json_always_carries_the_unreadable_key(self):
+        code, out, _err = self._run([str(self.dir), "--json", "--fail-on", "none"])
+        self.assertEqual((code, json.loads(out)["unreadable"]), (0, []))
+
+
+class MisplacedFlags(unittest.TestCase):
+    def _run(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(argv)
+        return code, err.getvalue()
+
+    def test_each_is_a_one_line_usage_error(self):
+        d = tempfile.mkdtemp(prefix="sxr-flags-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        out_file = os.path.join(d, "report.txt")
+        benign = str(FIXTURES / "benign" / "benign-session.jsonl")
+        for argv in (["--watch", d, "--watch-interval", "-1", "--watch-max-cycles", "1"],
+                     ["--watch", d, "--out", out_file, "--watch-max-cycles", "1"],
+                     ["--watch", d, "--fail-on", "bogus", "--watch-max-cycles", "1"],
+                     [benign, "--sort", "path"],
+                     [benign, "--tail-limit", "3"]):
+            with self.subTest(argv=argv):
+                code, err = self._run(argv)
+                self.assertEqual(code, 2)
+                self.assertEqual(len(err.strip().splitlines()), 1, err)
+                self.assertNotIn("Traceback", err)
+        self.assertFalse(os.path.exists(out_file))
+
+
 class SelectIgnore(unittest.TestCase):
     def _run(self, argv):
         out = io.StringIO()
