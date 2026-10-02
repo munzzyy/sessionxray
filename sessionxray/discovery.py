@@ -183,6 +183,7 @@ def parse_session(path) -> ParsedSession:
     if not session_id:
         session_id = path.stem
     _correlate_result_names(tool_calls, tool_results)
+    _load_persisted_outputs(path, tool_results)
 
     return ParsedSession(
         path=str(path),
@@ -343,6 +344,45 @@ def _extract_tool_use_result(result):
                 parts.append(v)
         return _cap("\n".join(parts))
     return "", False
+
+
+# Claude Code saves a large tool output under tool-results/ and leaves a 2 KB preview in this tag.
+_PERSISTED_RE = re.compile(r"\A\s*<persisted-output>[^\n]*\n[^\n]*?saved to:[ \t]*([^\n]*)", re.IGNORECASE)
+_SIDECAR_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+\.txt$")
+
+
+def _session_dir(path: Path) -> Path:
+    """`<stem>/` beside a session transcript, or the directory holding `subagents/` for an agent-*.jsonl."""
+    if path.name.startswith("agent-"):
+        for parent in path.parents:
+            if parent.name == "subagents":
+                return parent.parent
+    return path.with_suffix("")
+
+
+def _load_persisted_outputs(path: Path, tool_results: list) -> None:
+    """Scan the saved output in place of its preview. Only a strictly named, non-symlink file in this
+    session's own tool-results/ is opened, never the path the transcript records."""
+    results_dir = _session_dir(path) / "tool-results"
+    for tr in tool_results:
+        m = _PERSISTED_RE.match(tr.text)
+        if not m:
+            continue
+        name = re.split(r"[\\/]", m.group(1).strip())[-1]
+        text = None
+        if _SIDECAR_NAME_RE.match(name):
+            sidecar = results_dir / name
+            try:
+                if not sidecar.is_symlink():
+                    with open(sidecar, encoding="utf-8", errors="replace") as fh:
+                        text = fh.read(MAX_RESULT_TEXT + 1)
+            except OSError:
+                pass
+        if text is None:
+            # Only the preview was scanned.
+            tr.truncated = True
+        else:
+            tr.text, tr.truncated = _cap(text)
 
 
 def _correlate_result_names(tool_calls: list, tool_results: list) -> None:

@@ -50,6 +50,11 @@ under MIT.
   cache.
 - Evidence redaction missed a password inside a URL, `curl -u user:pass` and
   an `Authorization: Basic` header.
+- A large tool output is saved by Claude Code under
+  `<session-id>/tool-results/`, with only a 2 KB preview left in the
+  transcript. sessionxray scanned the preview and could grade text it never
+  saw as clean. It now scans the saved file, and a preview whose file is
+  missing counts as truncated.
 
 ### Security
 

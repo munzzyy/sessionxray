@@ -96,6 +96,8 @@ Point it at the JSONL files Claude Code already writes under `~/.claude/projects
 
 Subagents keep their own transcripts. Claude Code writes the tool calls of each one to an `agent-*.jsonl` file under `<session-id>/subagents/`, next to `<session-id>.jsonl`, and none of it lands in the parent transcript. Scanning a session scans those files with it. Their findings count toward the grade of the session and say which subagent they came from. A directory walk does not list them again as separate sessions. To scan one subagent alone, name its `agent-*.jsonl` file directly.
 
+Big tool outputs live outside the transcript too. When a result is too large, Claude Code saves it to a file under `<session-id>/tool-results/` and keeps only a 2 KB preview in the transcript. sessionxray scans the saved file in place of the preview. It opens files in that directory only, never the path the preview names. If the file is gone, the result counts as scanned in part, which `--summary` shows as `!1 truncated`.
+
 ### Fleet triage
 
 `--summary` collapses each session to one line: grade, score, severity counts, when it happened, and where it lives. Worst session first, so the one worth reading closely is at the top of a `~/.claude/projects` tree with a thousand sessions in it:
@@ -239,7 +241,7 @@ These are the open items a patch cannot close.
 
 - v0.2.0. The last tag is v0.1.0 from August. Everything since then is only on `main` until it is tagged: `--select`/`--ignore`, `--watch`, subagent scanning, `--session-end-hook` and the rule fixes. [SECURITY.md](SECURITY.md) promises fixes on the latest tagged version. The pipx line in Install builds from `main` and already has all of it.
 - The Python floor. CI tests 3.9, 3.11, 3.12, 3.13 and 3.14. GitHub moves its `ubuntu-latest` runner to a new Ubuntu image starting October 19, 2026, and if 3.9 is not available there the floor has to be decided on purpose.
-- Reports from other Claude Code versions. Subagent transcripts under `<session-id>/subagents/` are an undocumented layout and have been checked against one Claude Code version so far. If the subagents of a session do not show up in its report, open an issue with your Claude Code version and the file names in that directory. The names are enough; leave the contents out.
+- Reports from other Claude Code versions. Subagent transcripts under `<session-id>/subagents/` and saved tool outputs under `<session-id>/tool-results/` are an undocumented layout, and both have been checked against one Claude Code version so far. If the subagents of a session do not show up in its report, or a large tool output counts as truncated while its file is right there, open an issue with your Claude Code version and the file names in those directories. The names are enough; leave the contents out.
 
 ## Contributing
 
